@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <item name="search_input" type="id" />
+    <item name="home_button" type="id" />
+    <item name="feed_list" type="id" />
+    <item name="post_card" type="id" />
+    <item name="like_button" type="id" />
+    <item name="results_list" type="id" />
+    <item name="person_result" type="id" />
+    <item name="profile_page" type="id" />
+    <item name="connect_button" type="id" />
+</resources>

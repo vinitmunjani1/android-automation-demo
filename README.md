@@ -32,15 +32,26 @@ Then open: `http://127.0.0.1:8000`
 
 ## Optional Android mock UI run via ADB
 
-See [`TESTING_ADB.md`](TESTING_ADB.md) for the full phone/laptop setup.
+Two Android targets are available:
 
-Short version:
+1. **Browser mock site** — see [`TESTING_ADB.md`](TESTING_ADB.md)
+2. **Native mock app** — see [`TESTING_NATIVE_APP.md`](TESTING_NATIVE_APP.md)
+
+Browser short version:
 
 ```bash
 pip install -r requirements.txt
 adb devices -l
 python3 mock_server.py
 # edit config.json mock_site_url to your laptop LAN URL, e.g. http://192.168.1.42:8000
+python3 main.py --now --mode android
+```
+
+Native app short version:
+
+```bash
+# Build/install mock_android_app/ with Android Studio first.
+# Then set config.json: "android_target": "app"
 python3 main.py --now --mode android
 ```
 

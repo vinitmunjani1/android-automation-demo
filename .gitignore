@@ -6,3 +6,6 @@ venv/
 .DS_Store
 logs/*.csv
 !.gitkeep
+mock_android_app/.gradle/
+mock_android_app/**/build/
+mock_android_app/local.properties
