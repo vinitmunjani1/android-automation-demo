@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Mock Professional Network</title>
+  <style>
+    :root { --blue:#0a66c2; --bg:#f3f2ef; --card:#fff; --text:#1f2937; }
+    * { box-sizing: border-box; }
+    body { margin:0; font-family: system-ui, -apple-system, Segoe UI, sans-serif; background:var(--bg); color:var(--text); }
+    header { position:sticky; top:0; z-index:5; background:#fff; border-bottom:1px solid #ddd; padding:10px 14px; display:flex; gap:10px; align-items:center; }
+    .brand { font-weight:800; color:var(--blue); }
+    input { flex:1; padding:10px 12px; border-radius:22px; border:1px solid #cfd6df; }
+    main { max-width:680px; margin:18px auto; padding:0 12px; }
+    .card { background:var(--card); border:1px solid #ddd; border-radius:12px; margin:14px 0; padding:14px; box-shadow:0 1px 2px rgba(0,0,0,.04); }
+    .author { font-weight:700; }
+    .meta { color:#6b7280; font-size:13px; margin-top:2px; }
+    .post-text { margin:12px 0; line-height:1.45; }
+    button { border:0; border-radius:20px; padding:9px 14px; cursor:pointer; font-weight:650; }
+    .like, .connect { background:#eef5ff; color:var(--blue); }
+    .liked, .connected { background:#dbeafe; color:#064b91; }
+    .profile { display:none; }
+    .profile.active { display:block; }
+    .feed.hidden { display:none; }
+    .row { display:flex; justify-content:space-between; align-items:center; gap:10px; }
+    .pill { display:inline-block; background:#eef2ff; color:#3730a3; border-radius:999px; padding:4px 9px; font-size:12px; margin-top:8px; }
+    .result { cursor:pointer; }
+    .small { font-size:12px; color:#6b7280; }
+  </style>
+</head>
+<body>
+<header>
+  <div class="brand" data-testid="brand">MockIn</div>
+  <input id="search" data-testid="search-input" placeholder="Search people" autocomplete="off" />
+  <button id="homeBtn" data-testid="home-button">Home</button>
+</header>
+<main>
+  <section id="feed" class="feed" data-testid="feed"></section>
+  <section id="results" data-testid="search-results"></section>
+  <section id="profile" class="profile" data-testid="profile-page"></section>
+</main>
+<script>
+const people = [
+  {name:'Amit Sharma', title:'Founder', company:'TechCorp'},
+  {name:'Priya Mehta', title:'HR Manager', company:'PeopleOps'},
+  {name:'Rahul Singh', title:'Software Engineer', company:'BuildAI'},
+  {name:'Neha Kapoor', title:'Product Manager', company:'ScaleLabs'},
+  {name:'Daniel Lee', title:'Data Scientist', company:'InsightWorks'}
+];
+const posts = Array.from({length: 30}, (_, i) => ({
+  id: i + 1,
+  author: people[i % people.length],
+  text: [
+    'Sharing a quick lesson from building products with small teams.',
+    'Hiring is easier when communication and expectations are explicit.',
+    'Automation demos should start in controlled test environments.',
+    'Good outreach starts with relevance, context, and respect.',
+    'A reliable workflow is better than a flashy one-off script.'
+  ][i % 5]
+}));
+function renderFeed(){
+  feed.innerHTML = posts.map(p => `
+    <article class="card post" data-testid="post" data-post-id="${p.id}">
+      <div class="author">${p.author.name}</div>
+      <div class="meta">${p.author.title} at ${p.author.company}</div>
+      <div class="post-text">${p.text}</div>
+      <button class="like" data-testid="like-button" onclick="likePost(this)">Like</button>
+    </article>`).join('');
+}
+function likePost(btn){ btn.textContent = 'Liked'; btn.className = 'liked'; btn.dataset.state = 'liked'; }
+function renderResults(q){
+  const needle = q.trim().toLowerCase();
+  results.innerHTML = '';
+  profile.classList.remove('active');
+  feed.classList.toggle('hidden', !!needle);
+  if(!needle) return;
+  const matches = people.filter(p => p.name.toLowerCase().includes(needle) || p.company.toLowerCase().includes(needle));
+  results.innerHTML = matches.length ? matches.map((p, i) => `
+    <div class="card result" data-testid="person-result" onclick="openProfile('${p.name}')">
+      <div class="row"><div><div class="author">${p.name}</div><div class="meta">${p.title} at ${p.company}</div></div><span class="small">Open</span></div>
+    </div>`).join('') : '<div class="card" data-testid="no-results">No results found</div>';
+}
+function openProfile(name){
+  const p = people.find(x => x.name === name);
+  if(!p) return;
+  results.innerHTML = '';
+  feed.classList.add('hidden');
+  profile.classList.add('active');
+  profile.innerHTML = `
+    <div class="card" data-testid="profile-card">
+      <div class="row"><div><h2 data-testid="profile-name">${p.name}</h2><div class="meta">${p.title} at ${p.company}</div><span class="pill">Mock profile</span></div>
+      <button class="connect" data-testid="connect-button" onclick="connect(this)">Connect</button></div>
+      <p>Demo-only profile page for testing CSV-driven UI automation.</p>
+    </div>`;
+}
+function connect(btn){ btn.textContent = 'Pending'; btn.className = 'connected'; btn.dataset.state = 'pending'; }
+search.addEventListener('input', e => renderResults(e.target.value));
+homeBtn.onclick = () => { search.value=''; results.innerHTML=''; profile.classList.remove('active'); feed.classList.remove('hidden'); window.scrollTo(0,0); };
+renderFeed();
+</script>
+</body>
+</html>

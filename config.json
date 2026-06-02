@@ -1,0 +1,17 @@
+{
+  "time_window": {
+    "start": "09:00",
+    "end": "18:00"
+  },
+  "feed_scroll_min": 5,
+  "feed_scroll_max": 12,
+  "like_probability": 0.35,
+  "connect_probability": 0.5,
+  "profile_view_min_seconds": 2,
+  "profile_view_max_seconds": 7,
+  "delay_min_seconds": 0.4,
+  "delay_max_seconds": 1.4,
+  "max_contacts_per_run": 10,
+  "mock_site_url": "http://127.0.0.1:8000",
+  "mode": "mock"
+}
