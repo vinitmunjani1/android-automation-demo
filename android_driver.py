@@ -233,24 +233,16 @@ class AndroidMockSiteDriver:
         return "unknown"
 
     def _recover_from_stuck_page(self, label: str) -> None:
-        """Try to escape a stuck UI state without ending the run."""
+        """Escape a stuck UI state by simply pressing Back once."""
         self._stuck_recovery_count += 1
         try:
-            # First try Back for transient drawers, keyboards, or result overlays.
             self.d.press("back")
-            self.think(0.5, 1.0)
-        except Exception:
-            pass
-
-        try:
-            self._reveal_bottom_nav()
-            self._go_home()
-            self.think(0.8, 1.6)
+            self.think(0.6, 1.2)
             self.logger.log(
                 "stuck_page_recovery",
                 label,
                 "success",
-                f"method=back_then_home,total_recoveries={self._stuck_recovery_count}",
+                f"method=back,total_recoveries={self._stuck_recovery_count}",
             )
         except Exception as exc:
             self.logger.log("stuck_page_recovery", label, "failed", repr(exc))
