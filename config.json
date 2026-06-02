@@ -38,6 +38,8 @@
     "mid_scroll_reverse_probability": 0.38,
     "burst_segment_min_seconds": 0.08,
     "burst_segment_max_seconds": 0.42,
+    "burst_travel_min_ratio": 0.16,
+    "burst_travel_max_ratio": 0.48,
     "burst_pause_min_seconds": 0.05,
     "burst_pause_max_seconds": 0.55
   },

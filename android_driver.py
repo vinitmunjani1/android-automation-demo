@@ -251,14 +251,14 @@ class AndroidMockSiteDriver:
                 k=1,
             )[0]
             if gesture_type == "short":
-                start_y = int(height * random.uniform(0.62, 0.78))
-                end_y = int(height * random.uniform(0.42, 0.58))
+                start_y = int(height * random.uniform(0.64, 0.80))
+                end_y = int(height * random.uniform(0.36, 0.54))
             elif gesture_type == "medium":
-                start_y = int(height * random.uniform(0.70, 0.86))
-                end_y = int(height * random.uniform(0.30, 0.48))
+                start_y = int(height * random.uniform(0.74, 0.90))
+                end_y = int(height * random.uniform(0.22, 0.44))
             else:
-                start_y = int(height * random.uniform(0.78, 0.90))
-                end_y = int(height * random.uniform(0.18, 0.34))
+                start_y = int(height * random.uniform(0.84, 0.94))
+                end_y = int(height * random.uniform(0.08, 0.28))
         else:
             gesture_type = random.choices(
                 ["short", "medium", "long"],
@@ -266,14 +266,14 @@ class AndroidMockSiteDriver:
                 k=1,
             )[0]
             if gesture_type == "short":
-                start_y = int(height * random.uniform(0.34, 0.50))
-                end_y = int(height * random.uniform(0.52, 0.68))
+                start_y = int(height * random.uniform(0.28, 0.48))
+                end_y = int(height * random.uniform(0.58, 0.76))
             elif gesture_type == "medium":
-                start_y = int(height * random.uniform(0.24, 0.42))
-                end_y = int(height * random.uniform(0.62, 0.82))
+                start_y = int(height * random.uniform(0.16, 0.38))
+                end_y = int(height * random.uniform(0.68, 0.90))
             else:
-                start_y = int(height * random.uniform(0.16, 0.32))
-                end_y = int(height * random.uniform(0.72, 0.90))
+                start_y = int(height * random.uniform(0.08, 0.24))
+                end_y = int(height * random.uniform(0.84, 0.96))
 
         duration = random.uniform(
             float(self.human.get("swipe_duration_min_seconds", 0.22)),
@@ -332,7 +332,10 @@ class AndroidMockSiteDriver:
         self.logger.log("burst_scroll", direction, "started", f"segments={segments}")
 
         for segment in range(segments):
-            travel = int(height * random.uniform(0.10, 0.34))
+            travel = int(height * random.uniform(
+                float(self.human.get("burst_travel_min_ratio", 0.16)),
+                float(self.human.get("burst_travel_max_ratio", 0.48)),
+            ))
             if direction == "up":
                 next_y = max(int(height * 0.16), current_y - travel)
             else:
@@ -544,9 +547,9 @@ class AndroidMockSiteDriver:
     def _fast_profile_reverse_swipe(self) -> None:
         width, height = self.d.window_size()
         start_x = int(width * random.uniform(0.42, 0.58))
-        start_y = int(height * random.uniform(0.28, 0.42))
+        start_y = int(height * random.uniform(0.12, 0.30))
         end_x = start_x + int(width * random.uniform(-0.04, 0.04))
-        end_y = int(height * random.uniform(0.78, 0.92))
+        end_y = int(height * random.uniform(0.86, 0.97))
         self._natural_drag(
             start_x,
             start_y,
