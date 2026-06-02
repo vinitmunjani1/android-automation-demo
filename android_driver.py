@@ -231,6 +231,11 @@ class AndroidMockSiteDriver:
 
     def _human_swipe(self, direction: str = "up") -> None:
         width, height = self.d.window_size()
+
+        if self.target == "app" and random.random() < float(self.human.get("burst_scroll_probability", 0.32)):
+            self._burst_scroll(direction, width, height)
+            return
+
         center_x = int(width * random.uniform(0.40, 0.60))
         horizontal_drift = int(width * random.uniform(-0.055, 0.055))
 
@@ -310,6 +315,72 @@ class AndroidMockSiteDriver:
             )
         else:
             time.sleep(random.uniform(0.08, 0.32))
+
+    def _burst_scroll(self, direction: str, width: int, height: int) -> None:
+        """Abrupt human-like scroll burst for the controlled mock app.
+
+        Pattern: quick movement, sudden stop, optional reverse adjustment, then
+        a content-centering nudge. This makes occasional scrolls less smooth
+        without making every gesture chaotic.
+        """
+        segments = random.randint(2, 4)
+        current_y = int(height * (random.uniform(0.72, 0.88) if direction == "up" else random.uniform(0.22, 0.38)))
+        current_x = int(width * random.uniform(0.42, 0.58))
+        self.logger.log("burst_scroll", direction, "started", f"segments={segments}")
+
+        for segment in range(segments):
+            travel = int(height * random.uniform(0.10, 0.34))
+            if direction == "up":
+                next_y = max(int(height * 0.16), current_y - travel)
+            else:
+                next_y = min(int(height * 0.90), current_y + travel)
+            next_x = current_x + int(width * random.uniform(-0.045, 0.045))
+            self._natural_drag(
+                current_x,
+                current_y,
+                next_x,
+                next_y,
+                random.uniform(
+                    float(self.human.get("burst_segment_min_seconds", 0.08)),
+                    float(self.human.get("burst_segment_max_seconds", 0.42)),
+                ),
+                small=segment > 0,
+            )
+            current_x, current_y = next_x, next_y
+
+            # Sudden stop / content processing pause.
+            time.sleep(random.uniform(
+                float(self.human.get("burst_pause_min_seconds", 0.05)),
+                float(self.human.get("burst_pause_max_seconds", 0.55)),
+            ))
+
+            # Sometimes reverse mid-flow to bring content back to the center.
+            if random.random() < float(self.human.get("mid_scroll_reverse_probability", 0.38)):
+                reverse_travel = int(height * random.uniform(0.04, 0.16))
+                reverse_y = current_y + reverse_travel if direction == "up" else current_y - reverse_travel
+                reverse_y = max(int(height * 0.16), min(int(height * 0.90), reverse_y))
+                reverse_x = current_x + int(width * random.uniform(-0.025, 0.025))
+                self._natural_drag(
+                    current_x,
+                    current_y,
+                    reverse_x,
+                    reverse_y,
+                    random.uniform(0.07, 0.30),
+                    small=True,
+                )
+                current_x, current_y = reverse_x, reverse_y
+                self.logger.log("burst_scroll_adjust", direction, "success", "mid_scroll_reverse")
+                time.sleep(random.uniform(0.10, 0.65))
+
+        # Final small centering nudge after reading.
+        if random.random() < 0.55:
+            time.sleep(random.uniform(0.18, 0.90))
+            nudge_direction = "down" if direction == "up" else "up"
+            nudge = int(height * random.uniform(0.035, 0.10))
+            final_y = current_y + nudge if nudge_direction == "down" else current_y - nudge
+            final_y = max(int(height * 0.16), min(int(height * 0.90), final_y))
+            self._natural_drag(current_x, current_y, current_x + random.randint(-10, 10), final_y, random.uniform(0.08, 0.28), small=True)
+            self.logger.log("burst_scroll_adjust", direction, "success", "final_content_centering")
 
     def _natural_drag(self, start_x: int, start_y: int, end_x: int, end_y: int, duration: float, small: bool = False) -> None:
         """Less-linear drag for the controlled mock app.
