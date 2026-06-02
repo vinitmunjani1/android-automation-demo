@@ -79,6 +79,8 @@ class AndroidMockSiteDriver:
                 self.logger.log("open_profile", contact.name, "not_found")
                 continue
             self.logger.log("open_profile", contact.name, "success", f"{contact.title} at {contact.company}")
+            self._analyze_open_profile(contact.name)
+            self._return_profile_to_top(contact.name)
 
             min_view = float(self.config["profile_view_min_seconds"])
             max_view = float(self.config["profile_view_max_seconds"])
@@ -186,6 +188,7 @@ class AndroidMockSiteDriver:
             return
         self.logger.log("open_profile", contact.name, "success", f"{contact.title} at {contact.company}")
         self._analyze_open_profile(contact.name)
+        self._return_profile_to_top(contact.name)
 
         min_view = float(self.config["profile_view_min_seconds"])
         max_view = float(self.config["profile_view_max_seconds"])
@@ -510,6 +513,48 @@ class AndroidMockSiteDriver:
         if random.random() < 0.45:
             self.think(0.8, 2.0)
         self.logger.log("profile_analysis_end", label, "success", "humanized_profile_review")
+
+    def _return_profile_to_top(self, label: str) -> None:
+        """After reviewing a mock profile, move back near the top before connect."""
+        if self.target == "app":
+            try:
+                if not self.d(resourceId=self.rid("profile_page")).exists(timeout=0.8):
+                    return
+            except Exception:
+                return
+
+        self.think(
+            float(self.config.get("profile_top_return_wait_min_seconds", 1.2)),
+            float(self.config.get("profile_top_return_wait_max_seconds", 3.8)),
+        )
+        swipes = random.randint(
+            int(self.config.get("profile_top_return_min_swipes", 2)),
+            int(self.config.get("profile_top_return_max_swipes", 4)),
+        )
+        self.logger.log("profile_return_top_start", label, "success", f"swipes={swipes}")
+        for i in range(1, swipes + 1):
+            # direction="down" means finger moves down, content returns upward
+            # toward the top of the profile.
+            self._fast_profile_reverse_swipe()
+            self.logger.log("profile_return_top_scroll", f"{label}_{i}", "success", "fast_reverse_to_top")
+            time.sleep(random.uniform(0.08, 0.35))
+        self.think(0.5, 1.4)
+        self.logger.log("profile_return_top_end", label, "success", "ready_to_connect")
+
+    def _fast_profile_reverse_swipe(self) -> None:
+        width, height = self.d.window_size()
+        start_x = int(width * random.uniform(0.42, 0.58))
+        start_y = int(height * random.uniform(0.28, 0.42))
+        end_x = start_x + int(width * random.uniform(-0.04, 0.04))
+        end_y = int(height * random.uniform(0.78, 0.92))
+        self._natural_drag(
+            start_x,
+            start_y,
+            end_x,
+            end_y,
+            random.uniform(0.10, 0.32),
+            small=True,
+        )
 
     def _click_connect_button(self) -> bool:
         if self.target == "app":
