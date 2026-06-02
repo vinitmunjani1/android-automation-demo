@@ -85,6 +85,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--mode", choices=["mock", "android"], default=None)
     parser.add_argument("--now", action="store_true", help="Run immediately instead of waiting for random time window")
     parser.add_argument("--dry-run", action="store_true", help="Validate config/contacts only")
+    parser.add_argument(
+        "--log-file",
+        default=None,
+        help="Write runtime logs to this CSV file instead of the branch-specific default",
+    )
     return parser.parse_args()
 
 
@@ -94,9 +99,12 @@ def main() -> int:
     mode = args.mode or config.get("mode", "mock")
     max_contacts = int(config.get("max_contacts_per_run", 0)) or None
     contacts = load_contacts(Path(args.contacts), max_contacts=max_contacts)
-    logger = ActionLogger(ROOT / "logs" / "actions.csv")
+    log_file = Path(args.log_file) if args.log_file else Path(
+        config.get("log_file", ROOT / "logs" / "actions_linkedin_id_migration.csv")
+    )
+    logger = ActionLogger(log_file)
 
-    logger.log("validate", "config", "success", f"mode={mode}")
+    logger.log("validate", "config", "success", f"mode={mode},log_file={log_file}")
     logger.log("validate", "contacts", "success", f"count={len(contacts)}")
 
     if args.dry_run:

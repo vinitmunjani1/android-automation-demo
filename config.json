@@ -55,5 +55,6 @@
   "mock_site_url": "http://127.0.0.1:8000",
   "android_target": "app",
   "mock_app_package": "com.mockin.app",
+  "log_file": "logs/actions_linkedin_id_migration.csv",
   "mode": "mock"
 }
