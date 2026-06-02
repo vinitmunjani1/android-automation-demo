@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import random
 import shlex
 import time
@@ -32,6 +33,9 @@ class AndroidMockSiteDriver:
         self.target = config.get("android_target", "web")
         self.app_package = config.get("mock_app_package", "com.mockin.app")
         self.logger = logger
+        self._last_page_signature = ""
+        self._same_page_count = 0
+        self._stuck_recovery_count = 0
 
     def delay(self, multiplier: float = 1.0) -> None:
         lo = float(self.config["delay_min_seconds"])
@@ -113,6 +117,8 @@ class AndroidMockSiteDriver:
         if self.target == "app" and self.config.get("check_notifications_on_start", True):
             self._check_notifications()
 
+        self._record_page_progress("journey_start", recover=False)
+
         last_action = ""
         repeated = 0
         for step in range(1, action_count + 1):
@@ -158,7 +164,96 @@ class AndroidMockSiteDriver:
                     float(settings.get("idle_max_seconds", 4.5)),
                 )
 
+            self._record_page_progress(f"step_{step}_{action}")
+
         self.logger.log("random_journey_end", self.target, "success", f"remaining_contacts={len(remaining_contacts)}")
+
+    def _record_page_progress(self, label: str, recover: bool = True) -> None:
+        """Detect repeated no-progress screen states and recover safely."""
+        if self.target != "app" or not self.config.get("stuck_page_watchdog_enabled", True):
+            return
+
+        signature = self._page_signature()
+        if not signature:
+            return
+
+        if signature == self._last_page_signature:
+            self._same_page_count += 1
+        else:
+            self._last_page_signature = signature
+            self._same_page_count = 0
+            return
+
+        threshold = int(self.config.get("stuck_page_same_signature_threshold", 2))
+        self.logger.log(
+            "page_progress",
+            label,
+            "same_page",
+            f"same_count={self._same_page_count},signature={signature}",
+        )
+        if recover and self._same_page_count >= threshold:
+            self.logger.log(
+                "stuck_page_detected",
+                label,
+                "recovering",
+                f"same_count={self._same_page_count},signature={signature}",
+            )
+            self._recover_from_stuck_page(label)
+            self._last_page_signature = self._page_signature()
+            self._same_page_count = 0
+
+    def _page_signature(self) -> str:
+        """Return a compact fingerprint of the currently visible app screen."""
+        try:
+            page = self._current_mock_page_name()
+            xml = self.d.dump_hierarchy(compressed=True) or ""
+            # Strip volatile size by hashing the visible hierarchy; include page
+            # name so logs remain readable.
+            digest = hashlib.sha1(xml.encode("utf-8", errors="ignore")).hexdigest()[:12]
+            return f"{page}:{digest}"
+        except Exception as exc:
+            self.logger.log("page_signature", self.target, "failed", repr(exc))
+            return ""
+
+    def _current_mock_page_name(self) -> str:
+        checks = [
+            ("profile", lambda: self.d(resourceId=self.rid("profile_page")).exists(timeout=0.1)),
+            ("notifications", lambda: self._is_notifications_page_open(timeout=0.1)),
+            ("network", lambda: self._is_network_page_open(timeout=0.1)),
+            ("messages", lambda: self._is_messages_page_open(timeout=0.1)),
+            ("search_results", lambda: self.d(resourceId=self.rid("results_list")).exists(timeout=0.1)),
+            ("home_feed", lambda: self.d(resourceId=self.rid("feed_list")).exists(timeout=0.1)),
+        ]
+        for name, check in checks:
+            try:
+                if check():
+                    return name
+            except Exception:
+                pass
+        return "unknown"
+
+    def _recover_from_stuck_page(self, label: str) -> None:
+        """Try to escape a stuck UI state without ending the run."""
+        self._stuck_recovery_count += 1
+        try:
+            # First try Back for transient drawers, keyboards, or result overlays.
+            self.d.press("back")
+            self.think(0.5, 1.0)
+        except Exception:
+            pass
+
+        try:
+            self._reveal_bottom_nav()
+            self._go_home()
+            self.think(0.8, 1.6)
+            self.logger.log(
+                "stuck_page_recovery",
+                label,
+                "success",
+                f"method=back_then_home,total_recoveries={self._stuck_recovery_count}",
+            )
+        except Exception as exc:
+            self.logger.log("stuck_page_recovery", label, "failed", repr(exc))
 
     def _initial_orientation(self) -> None:
         """First-open orientation for the mock app/site: pause, scan, tiny scroll."""

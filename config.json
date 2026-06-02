@@ -56,5 +56,7 @@
   "android_target": "app",
   "mock_app_package": "com.mockin.app",
   "log_file": "logs/actions_linkedin_id_migration.csv",
+  "stuck_page_watchdog_enabled": true,
+  "stuck_page_same_signature_threshold": 2,
   "mode": "mock"
 }
