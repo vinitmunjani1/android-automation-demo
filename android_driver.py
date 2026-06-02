@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import random
+import shlex
 import time
 from typing import Iterable
 
@@ -11,7 +12,10 @@ from mock_driver import Contact
 class AndroidMockSiteDriver:
     """Optional Android UI driver for the local mock site only.
 
-    This intentionally uses stable `data-testid` selectors from `mock_site/index.html`.
+    uiautomator2 controls Android's accessibility/UI layer, not the raw browser
+    DOM. For mobile Chrome/web pages, text selectors and coordinate fallbacks are
+    more reliable than HTML-only attributes such as data-testid.
+
     Do not repoint this at real social platforms.
     """
 
@@ -42,10 +46,7 @@ class AndroidMockSiteDriver:
         for i in range(1, count + 1):
             self.delay(random.uniform(0.8, 1.8))
             if random.random() < float(self.config["like_probability"]):
-                buttons = self.d.xpath('//*[@data-testid="like-button"]').all()
-                if buttons:
-                    btn = random.choice(buttons[:3])
-                    btn.click()
+                if self._click_like_button():
                     self.logger.log("like_post", f"visible_post_{i}")
                 else:
                     self.logger.log("like_post", f"visible_post_{i}", "not_found")
@@ -55,38 +56,108 @@ class AndroidMockSiteDriver:
 
     def search_and_visit_contacts(self, contacts: Iterable[Contact]) -> None:
         for contact in contacts:
-            search = self.d.xpath('//*[@data-testid="search-input"]')
-            if not search.exists:
+            self._go_home()
+            if not self._focus_search_box():
                 self.logger.log("search_person", contact.name, "failed", "search input missing")
                 continue
-            search.click()
-            self.d.clear_text()
             self._type_text(contact.name)
             self.logger.log("search_person", contact.name)
             self.delay(1)
-            result = self.d.xpath('//*[@data-testid="person-result"]')
-            if not result.exists:
+
+            if not self._click_text(contact.name):
                 self.logger.log("open_profile", contact.name, "not_found")
                 continue
-            result.click()
             self.logger.log("open_profile", contact.name, "success", f"{contact.title} at {contact.company}")
+
             time.sleep(random.uniform(float(self.config["profile_view_min_seconds"]), float(self.config["profile_view_max_seconds"])))
             if random.random() < float(self.config["connect_probability"]):
-                connect = self.d.xpath('//*[@data-testid="connect-button"]')
-                if connect.exists:
-                    connect.click()
+                if self._click_text("Connect"):
                     self.logger.log("connect", contact.name, "clicked", "mock button")
                 else:
                     self.logger.log("connect", contact.name, "not_found")
             else:
                 self.logger.log("connect", contact.name, "skipped", "random decision")
-            home = self.d.xpath('//*[@data-testid="home-button"]')
-            if home.exists:
-                home.click()
             self.delay()
 
+    def _click_like_button(self) -> bool:
+        # Prefer accessibility text. Fall back to XPath text variants if needed.
+        return self._click_text("Like") or self._click_xpath_text("Like")
+
+    def _go_home(self) -> None:
+        self._click_text("Home")
+        time.sleep(0.5)
+        # Ensure the sticky header/search bar is visible even after feed scrolling.
+        for _ in range(2):
+            self.d.swipe_ext("down", scale=0.85)
+            time.sleep(0.2)
+
+    def _focus_search_box(self) -> bool:
+        # Try common Android/browser accessibility representations first.
+        candidates = [
+            self.d(description="Search people"),
+            self.d(text="Search people"),
+            self.d(className="android.widget.EditText"),
+        ]
+        for candidate in candidates:
+            try:
+                if candidate.exists(timeout=0.5):
+                    candidate.click()
+                    self.d.clear_text()
+                    return True
+            except Exception:
+                pass
+
+        # Mobile Chrome often exposes little of the page DOM. The mock site's
+        # search field is in the sticky header, so tap the header search area.
+        width, height = self.d.window_size()
+        for y_ratio in (0.16, 0.20, 0.24):
+            self.d.click(int(width * 0.48), int(height * y_ratio))
+            time.sleep(0.3)
+            try:
+                self.d.clear_text()
+            except Exception:
+                pass
+            # If keyboard appears or an EditText is focused, typing will work.
+            return True
+        return False
+
+    def _click_text(self, text: str) -> bool:
+        selectors = [
+            self.d(text=text),
+            self.d(textContains=text),
+            self.d(description=text),
+            self.d(descriptionContains=text),
+        ]
+        for selector in selectors:
+            try:
+                if selector.exists(timeout=0.7):
+                    selector.click()
+                    return True
+            except Exception:
+                pass
+        return self._click_xpath_text(text)
+
+    def _click_xpath_text(self, text: str) -> bool:
+        escaped = text.replace('"', '\\"')
+        xpaths = [
+            f'//*[@text="{escaped}"]',
+            f'//*[contains(@text, "{escaped}")]',
+            f'//*[@content-desc="{escaped}"]',
+            f'//*[contains(@content-desc, "{escaped}")]',
+        ]
+        for xpath in xpaths:
+            try:
+                item = self.d.xpath(xpath)
+                if item.exists:
+                    item.click()
+                    return True
+            except Exception:
+                pass
+        return False
+
     def _type_text(self, text: str) -> None:
-        # Character-by-character input for mock UI testing. Avoids relying on clipboard.
-        for char in text:
-            self.d.send_keys(char, clear=False)
-            time.sleep(random.uniform(0.03, 0.16))
+        # ADB input text is more reliable for browser fields than per-character
+        # accessibility typing. Spaces must be escaped as %s.
+        safe = text.replace(" ", "%s")
+        self.d.shell(f"input text {shlex.quote(safe)}")
+        time.sleep(random.uniform(0.2, 0.5))
