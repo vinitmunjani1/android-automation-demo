@@ -200,6 +200,7 @@ public class MainActivity extends Activity {
             LinearLayout card = card();
             card.setId(R.id.post_card);
             card.setContentDescription("Post by " + p.name);
+            card.setOnClickListener(v -> showProfile(p));
 
             LinearLayout header = new LinearLayout(this);
             header.setOrientation(LinearLayout.HORIZONTAL);
@@ -208,7 +209,10 @@ public class MainActivity extends Activity {
             LinearLayout identity = new LinearLayout(this);
             identity.setOrientation(LinearLayout.VERTICAL);
             identity.setPadding(dp(10), 0, 0, 0);
-            addText(identity, p.name, 16, true, TEXT);
+            TextView authorName = addText(identity, p.name, 16, true, TEXT);
+            authorName.setId(R.id.feed_profile_link);
+            authorName.setContentDescription("Open feed profile " + p.name);
+            authorName.setOnClickListener(v -> showProfile(p));
             addText(identity, p.title + " at " + p.company, 12, false, MUTED);
             addText(identity, (i + 1) + "h • Mock visibility", 12, false, MUTED);
             header.addView(identity, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));

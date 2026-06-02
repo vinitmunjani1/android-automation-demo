@@ -5,6 +5,7 @@
     <item name="feed_list" type="id" />
     <item name="post_card" type="id" />
     <item name="like_button" type="id" />
+    <item name="feed_profile_link" type="id" />
     <item name="results_list" type="id" />
     <item name="person_result" type="id" />
     <item name="profile_page" type="id" />

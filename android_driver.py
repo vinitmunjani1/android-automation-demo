@@ -161,6 +161,7 @@ class AndroidMockSiteDriver:
             self.logger.log("open_profile", contact.name, "not_found")
             return
         self.logger.log("open_profile", contact.name, "success", f"{contact.title} at {contact.company}")
+        self._analyze_open_profile(contact.name)
 
         min_view = float(self.config["profile_view_min_seconds"])
         max_view = float(self.config["profile_view_max_seconds"])
@@ -181,6 +182,15 @@ class AndroidMockSiteDriver:
             float(self.human.get("feed_read_min_seconds", 1.8)),
             float(self.human.get("feed_read_max_seconds", 5.2)),
         )
+
+        if self.target == "app" and random.random() < float(self.config.get("feed_profile_open_probability", 0.18)):
+            if self._open_profile_from_feed():
+                self.logger.log("open_profile_from_feed", f"visible_post_{index}", "success", "random feed profile open")
+                self._analyze_open_profile(f"feed_profile_{index}")
+                self._go_home()
+                self.think(0.8, 2.0)
+            else:
+                self.logger.log("open_profile_from_feed", f"visible_post_{index}", "not_found", "no visible feed profile link")
 
         if random.random() < float(self.config["like_probability"]):
             self.think(0.5, 1.7)
@@ -277,14 +287,70 @@ class AndroidMockSiteDriver:
 
     def _click_like_button(self) -> bool:
         if self.target == "app":
+            selectors = [
+                self.d(resourceId=self.rid("like_button"), text="Like"),
+                self.d(text="Like"),
+                self.d(description="Like"),
+            ]
+            for selector in selectors:
+                try:
+                    if selector.exists(timeout=0.8):
+                        selector.click()
+                        return True
+                except Exception:
+                    pass
+
+            # Coordinate fallback for the first visible feed action row.
             try:
-                buttons = self.d(resourceId=self.rid("like_button"))
-                if buttons.exists(timeout=0.8):
-                    buttons.click()
-                    return True
+                width, height = self.d.window_size()
+                self.d.click(int(width * random.uniform(0.12, 0.22)), int(height * random.uniform(0.55, 0.78)))
+                self.think(0.2, 0.5)
+                return True
             except Exception:
                 pass
         return self._click_text("Like") or self._click_xpath_text("Like")
+
+    def _open_profile_from_feed(self) -> bool:
+        if self.target != "app":
+            return False
+        selectors = [
+            self.d(resourceId=self.rid("feed_profile_link")),
+            self.d(descriptionContains="Open feed profile"),
+            self.d(resourceId=self.rid("post_card")),
+        ]
+        for selector in selectors:
+            try:
+                if selector.exists(timeout=0.8):
+                    self.think(0.3, 1.0)
+                    selector.click()
+                    self.think(0.8, 1.8)
+                    return self.d(resourceId=self.rid("profile_page")).exists(timeout=1.2)
+            except Exception:
+                pass
+        return False
+
+    def _analyze_open_profile(self, label: str) -> None:
+        """Scroll an opened mock profile like a human QA reviewer."""
+        if self.target == "app":
+            try:
+                if not self.d(resourceId=self.rid("profile_page")).exists(timeout=0.8):
+                    return
+            except Exception:
+                return
+
+        passes = random.randint(
+            int(self.config.get("profile_scroll_min", 2)),
+            int(self.config.get("profile_scroll_max", 5)),
+        )
+        self.logger.log("profile_analysis_start", label, "success", f"scrolls={passes}")
+        for i in range(1, passes + 1):
+            self.think(1.0, 3.2)
+            direction = "up" if random.random() < 0.78 else "down"
+            self._human_swipe(direction=direction)
+            self.logger.log("profile_scroll", f"{label}_{i}", "success", f"direction={direction}")
+        if random.random() < 0.45:
+            self.think(0.8, 2.0)
+        self.logger.log("profile_analysis_end", label, "success", "humanized_profile_review")
 
     def _click_connect_button(self) -> bool:
         if self.target == "app":
