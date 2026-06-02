@@ -6,7 +6,9 @@ Goal: make `mock_android_app/` a richer professional-network mock for safe Andro
 
 - Add richer post types:
   - text-only posts
-  - image placeholder posts
+  - image placeholder posts — implemented
+  - video placeholder posts — implemented
+  - document/carousel placeholder posts — implemented
   - repost-style cards
   - hiring/job update cards
   - poll-style cards
@@ -16,6 +18,8 @@ Goal: make `mock_android_app/` a richer professional-network mock for safe Andro
   - timestamps
   - visibility labels
   - follow/connect labels
+- Add interaction behavior:
+  - Like/unlike toggle — implemented
 - Make feed author area reliably clickable:
   - stable `feed_profile_link` resource ID
   - clickable author header row

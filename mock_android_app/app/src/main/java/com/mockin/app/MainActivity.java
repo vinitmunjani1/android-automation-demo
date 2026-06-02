@@ -235,6 +235,14 @@ public class MainActivity extends Activity {
             TextView body = addText(card, postText(i), 15, false, TEXT);
             body.setPadding(0, dp(10), 0, dp(10));
 
+            if (i % 3 == 0) {
+                card.addView(mockImageBlock(i));
+            } else if (i % 3 == 1) {
+                card.addView(mockVideoBlock(i));
+            } else {
+                card.addView(mockDocumentBlock(i));
+            }
+
             TextView metrics = addText(card, "👍 " + (18 + i * 3) + " reactions • " + (i % 5) + " comments", 12, false, MUTED);
             metrics.setPadding(0, 0, 0, dp(6));
 
@@ -250,9 +258,15 @@ public class MainActivity extends Activity {
             like.setContentDescription("Like");
             like.setOnClickListener(v -> {
                 Button b = (Button) v;
-                b.setText("Liked");
-                b.setContentDescription("Liked");
-                b.setTextColor(BLUE);
+                if ("Liked".contentEquals(b.getText())) {
+                    b.setText("Like");
+                    b.setContentDescription("Like");
+                    b.setTextColor(MUTED);
+                } else {
+                    b.setText("Liked");
+                    b.setContentDescription("Liked");
+                    b.setTextColor(BLUE);
+                }
             });
             actionRow.addView(like);
             actionRow.addView(feedAction("Comment"));
@@ -272,6 +286,136 @@ public class MainActivity extends Activity {
                 "A reliable workflow beats a flashy one-off script every time. Repeatability is the product."
         };
         return posts[i % posts.length];
+    }
+
+    private View mockImageBlock(int i) {
+        LinearLayout media = new LinearLayout(this);
+        media.setOrientation(LinearLayout.VERTICAL);
+        media.setPadding(dp(14), dp(18), dp(14), dp(14));
+        media.setBackground(rounded(mediaColor(i), 0, dp(10)));
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                dp(210)
+        );
+        lp.setMargins(0, dp(8), 0, dp(10));
+        media.setLayoutParams(lp);
+
+        TextView label = new TextView(this);
+        label.setText("Mock product screenshot");
+        label.setTextColor(Color.WHITE);
+        label.setTextSize(22);
+        label.setTypeface(Typeface.DEFAULT_BOLD);
+        media.addView(label);
+
+        TextView subtitle = new TextView(this);
+        subtitle.setText("Dashboard preview • generated visual placeholder");
+        subtitle.setTextColor(Color.WHITE);
+        subtitle.setTextSize(14);
+        subtitle.setPadding(0, dp(6), 0, dp(12));
+        media.addView(subtitle);
+
+        LinearLayout bars = new LinearLayout(this);
+        bars.setOrientation(LinearLayout.VERTICAL);
+        bars.addView(fakeBar(0.82));
+        bars.addView(fakeBar(0.55));
+        bars.addView(fakeBar(0.70));
+        media.addView(bars);
+        media.setContentDescription("Mock image post");
+        return media;
+    }
+
+    private View mockVideoBlock(int i) {
+        LinearLayout video = new LinearLayout(this);
+        video.setOrientation(LinearLayout.VERTICAL);
+        video.setGravity(Gravity.CENTER);
+        video.setPadding(dp(14), dp(14), dp(14), dp(14));
+        video.setBackground(rounded(Color.rgb(17, 24, 39), 0, dp(10)));
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                dp(220)
+        );
+        lp.setMargins(0, dp(8), 0, dp(10));
+        video.setLayoutParams(lp);
+
+        TextView play = new TextView(this);
+        play.setText("▶");
+        play.setTextSize(48);
+        play.setTextColor(Color.WHITE);
+        play.setGravity(Gravity.CENTER);
+        play.setBackground(oval(Color.rgb(10, 102, 194)));
+        video.addView(play, new LinearLayout.LayoutParams(dp(86), dp(86)));
+
+        TextView title = new TextView(this);
+        title.setText("Mock video: product walkthrough");
+        title.setTextColor(Color.WHITE);
+        title.setTextSize(16);
+        title.setTypeface(Typeface.DEFAULT_BOLD);
+        title.setGravity(Gravity.CENTER);
+        title.setPadding(0, dp(12), 0, 0);
+        video.addView(title);
+
+        TextView duration = new TextView(this);
+        duration.setText("02:14");
+        duration.setTextColor(Color.rgb(209, 213, 219));
+        duration.setTextSize(13);
+        duration.setGravity(Gravity.CENTER);
+        video.addView(duration);
+        video.setContentDescription("Mock video post");
+        return video;
+    }
+
+    private View mockDocumentBlock(int i) {
+        LinearLayout doc = new LinearLayout(this);
+        doc.setOrientation(LinearLayout.HORIZONTAL);
+        doc.setGravity(Gravity.CENTER_VERTICAL);
+        doc.setPadding(dp(14), dp(14), dp(14), dp(14));
+        doc.setBackground(rounded(Color.rgb(248, 250, 252), BORDER, dp(10)));
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+        );
+        lp.setMargins(0, dp(8), 0, dp(10));
+        doc.setLayoutParams(lp);
+
+        TextView icon = new TextView(this);
+        icon.setText("▣");
+        icon.setTextSize(36);
+        icon.setTextColor(BLUE);
+        icon.setGravity(Gravity.CENTER);
+        doc.addView(icon, new LinearLayout.LayoutParams(dp(58), dp(58)));
+
+        LinearLayout copy = new LinearLayout(this);
+        copy.setOrientation(LinearLayout.VERTICAL);
+        copy.setPadding(dp(12), 0, 0, 0);
+        addText(copy, "Mock carousel document", 15, true, TEXT);
+        addText(copy, "5 slides • QA visual placeholder", 13, false, MUTED);
+        doc.addView(copy, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
+        doc.setContentDescription("Mock document post");
+        return doc;
+    }
+
+    private View fakeBar(double widthRatio) {
+        TextView bar = new TextView(this);
+        bar.setText(" ");
+        bar.setBackground(rounded(Color.argb(190, 255, 255, 255), 0, dp(8)));
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                (int) (getResources().getDisplayMetrics().widthPixels * widthRatio),
+                dp(12)
+        );
+        lp.setMargins(0, dp(8), 0, 0);
+        bar.setLayoutParams(lp);
+        return bar;
+    }
+
+    private int mediaColor(int i) {
+        int[] colors = {
+                Color.rgb(37, 99, 235),
+                Color.rgb(5, 150, 105),
+                Color.rgb(124, 58, 237),
+                Color.rgb(219, 39, 119),
+                Color.rgb(234, 88, 12)
+        };
+        return colors[i % colors.length];
     }
 
     private void renderResults(String query) {
