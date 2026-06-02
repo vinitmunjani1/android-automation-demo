@@ -247,7 +247,7 @@ class AndroidMockSiteDriver:
             float(self.human.get("swipe_duration_min_seconds", 0.22)),
             float(self.human.get("swipe_duration_max_seconds", 1.45)),
         )
-        self.d.swipe(center_x, start_y, center_x + horizontal_drift, end_y, duration=duration)
+        self._natural_drag(center_x, start_y, center_x + horizontal_drift, end_y, duration)
 
         # Small imperfect follow-up motions make the scroll less mechanically
         # smooth: a tiny nudge, a settling pause, or a slight reverse correction.
@@ -260,12 +260,13 @@ class AndroidMockSiteDriver:
             else:
                 nudge_start = int(height * random.uniform(0.34, 0.50))
                 nudge_end = int(nudge_start + height * random.uniform(0.06, 0.16))
-            self.d.swipe(
+            self._natural_drag(
                 int(width * random.uniform(0.44, 0.56)),
                 nudge_start,
                 int(width * random.uniform(0.43, 0.57)),
                 nudge_end,
-                duration=random.uniform(0.12, 0.35),
+                random.uniform(0.12, 0.35),
+                small=True,
             )
         elif roll < 0.34:
             time.sleep(random.uniform(0.18, 0.55))
@@ -275,15 +276,65 @@ class AndroidMockSiteDriver:
             else:
                 correction_start = int(height * random.uniform(0.54, 0.68))
                 correction_end = int(correction_start - height * random.uniform(0.04, 0.11))
-            self.d.swipe(
+            self._natural_drag(
                 int(width * random.uniform(0.44, 0.56)),
                 correction_start,
                 int(width * random.uniform(0.43, 0.57)),
                 correction_end,
-                duration=random.uniform(0.10, 0.28),
+                random.uniform(0.10, 0.28),
+                small=True,
             )
         else:
             time.sleep(random.uniform(0.08, 0.32))
+
+    def _natural_drag(self, start_x: int, start_y: int, end_x: int, end_y: int, duration: float, small: bool = False) -> None:
+        """Less-linear drag for the controlled mock app.
+
+        UIAutomator's basic swipe is a straight, constant-looking motion. This
+        tries a multi-point curved path first, then falls back to normal swipe if
+        the installed uiautomator2 version/device does not support it.
+        """
+        if not small and random.random() < 0.10:
+            # A tiny pre-movement/hesitation: users often adjust their thumb
+            # before committing to a longer drag.
+            try:
+                self.d.swipe(
+                    start_x + random.randint(-8, 8),
+                    start_y + random.randint(-8, 8),
+                    start_x + random.randint(-18, 18),
+                    start_y + random.randint(-18, 18),
+                    duration=random.uniform(0.05, 0.14),
+                )
+                time.sleep(random.uniform(0.08, 0.24))
+            except Exception:
+                pass
+
+        points = self._curved_points(start_x, start_y, end_x, end_y, small=small)
+        try:
+            self.d.swipe_points(points, duration=duration)
+        except Exception:
+            # Fallback still uses varied endpoints/duration from _human_swipe.
+            self.d.swipe(start_x, start_y, end_x, end_y, duration=duration)
+
+    def _curved_points(self, start_x: int, start_y: int, end_x: int, end_y: int, small: bool = False) -> list[tuple[int, int]]:
+        steps = random.randint(4, 7) if not small else random.randint(3, 5)
+        points: list[tuple[int, int]] = []
+        curve = random.uniform(-0.10, 0.10)
+        for i in range(steps):
+            t = i / (steps - 1)
+            # Ease-out/ease-in mixture: quick middle, slower start/end.
+            eased = (1 - (1 - t) * (1 - t)) if random.random() < 0.55 else (t * t * (3 - 2 * t))
+            x = start_x + (end_x - start_x) * eased
+            y = start_y + (end_y - start_y) * eased
+            perpendicular = (t - 0.5) * curve
+            x += (end_y - start_y) * perpendicular
+            y -= (end_x - start_x) * perpendicular
+            x += random.uniform(-7, 7) if not small else random.uniform(-3, 3)
+            y += random.uniform(-7, 7) if not small else random.uniform(-3, 3)
+            points.append((int(x), int(y)))
+        points[0] = (start_x, start_y)
+        points[-1] = (end_x, end_y)
+        return points
 
     def _click_like_button(self) -> bool:
         if self.target == "app":
