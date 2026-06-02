@@ -178,6 +178,9 @@ class AndroidMockSiteDriver:
         if not signature:
             return
 
+        current_page = signature.split(":", 1)[0]
+        self.logger.log("current_page", label, "observed", f"page={current_page},signature={signature}")
+
         if signature == self._last_page_signature:
             self._same_page_count += 1
         else:
@@ -207,7 +210,7 @@ class AndroidMockSiteDriver:
         """Return a compact fingerprint of the currently visible app screen."""
         try:
             page = self._current_mock_page_name()
-            xml = self.d.dump_hierarchy(compressed=True) or ""
+            xml = self._visible_hierarchy()
             # Strip volatile size by hashing the visible hierarchy; include page
             # name so logs remain readable.
             digest = hashlib.sha1(xml.encode("utf-8", errors="ignore")).hexdigest()[:12]
@@ -216,22 +219,70 @@ class AndroidMockSiteDriver:
             self.logger.log("page_signature", self.target, "failed", repr(exc))
             return ""
 
+    def _visible_hierarchy(self) -> str:
+        try:
+            return self.d.dump_hierarchy(compressed=True) or ""
+        except Exception:
+            return ""
+
     def _current_mock_page_name(self) -> str:
-        checks = [
-            ("profile", lambda: self.d(resourceId=self.rid("profile_page")).exists(timeout=0.1)),
+        """Classify the current visible screen from resource IDs/text.
+
+        UIAutomator selectors can return false negatives when the bottom nav is
+        hidden or the app is mid-transition. The hierarchy string is more useful
+        for deciding where the bot actually is before taking an action.
+        """
+        xml = self._visible_hierarchy()
+        low = xml.lower()
+        rid = self.rid
+
+        # Strong resource-id / unique-text matches first. Avoid generic words
+        # like Connect/Follow by themselves because they can appear on multiple
+        # screens.
+        strong_checks = [
+            ("profile", [rid("profile_page"), "profile page"]),
+            ("notifications", [rid("notifications_page"), "mock connection requests", "review request profiles", rid("connection_request")]),
+            ("network", [rid("network_page"), "my network", "people you may know", rid("network_person_card"), "network suggestion"]),
+            ("messages", [rid("messages_page"), rid("conversation_item"), "conversation with"]),
+            ("search_results", [rid("results_list"), rid("person_result"), "show all results", "see all results"]),
+            ("home_feed", [rid("feed_list"), "start a professional update"]),
+        ]
+        for name, needles in strong_checks:
+            if any(str(needle).lower() in low for needle in needles):
+                return name
+
+        # Weaker composite checks. These require multiple hints.
+        if ("follow" in low or "connect" in low) and ("about" in low or "activity" in low or "experience" in low):
+            return "profile"
+        if rid("post_card").lower() in low or rid("like_button").lower() in low:
+            return "home_feed"
+        if "messages" in low and ("focused" in low or "conversation" in low):
+            return "messages"
+
+        # Selector fallback for cases where hierarchy is unexpectedly sparse.
+        selector_checks = [
+            ("profile", lambda: self.d(resourceId=rid("profile_page")).exists(timeout=0.1)),
             ("notifications", lambda: self._is_notifications_page_open(timeout=0.1)),
             ("network", lambda: self._is_network_page_open(timeout=0.1)),
             ("messages", lambda: self._is_messages_page_open(timeout=0.1)),
-            ("search_results", lambda: self.d(resourceId=self.rid("results_list")).exists(timeout=0.1)),
-            ("home_feed", lambda: self.d(resourceId=self.rid("feed_list")).exists(timeout=0.1)),
+            ("search_results", lambda: self.d(resourceId=rid("results_list")).exists(timeout=0.1)),
+            ("home_feed", lambda: self.d(resourceId=rid("feed_list")).exists(timeout=0.1)),
         ]
-        for name, check in checks:
+        for name, check in selector_checks:
             try:
                 if check():
                     return name
             except Exception:
                 pass
         return "unknown"
+
+    def _ensure_current_page(self, expected: str, label: str) -> bool:
+        current = self._current_mock_page_name()
+        if current == expected:
+            return True
+        self.logger.log("current_page_guard", label, "blocked", f"expected={expected},actual={current}")
+        self._recover_from_stuck_page(label)
+        return False
 
     def _recover_from_stuck_page(self, label: str) -> None:
         """Escape a stuck UI state by simply pressing Back once."""
@@ -300,6 +351,9 @@ class AndroidMockSiteDriver:
         self.think(1.0, 2.8)
 
     def _scroll_feed_once(self, index: int) -> None:
+        if self.target == "app" and not self._ensure_current_page("home_feed", f"feed_{index}"):
+            return
+
         self.think(
             float(self.human.get("feed_read_min_seconds", 1.8)),
             float(self.human.get("feed_read_max_seconds", 5.2)),
@@ -322,8 +376,13 @@ class AndroidMockSiteDriver:
             else:
                 self.logger.log("like_post", f"visible_post_{index}", "not_found")
 
+        before = self._page_signature() if self.target == "app" else ""
         self._scroll_content_down()
-        self.logger.log("scroll_feed", f"post_window_{index}", "success", "content_down_safe_scroll")
+        after = self._page_signature() if self.target == "app" else ""
+        if self.target != "app" or before != after:
+            self.logger.log("scroll_feed", f"post_window_{index}", "success", "content_down_safe_scroll")
+        else:
+            self.logger.log("scroll_feed", f"post_window_{index}", "no_change", "page_signature_unchanged")
         if random.random() < 0.25:
             self.think(0.8, 2.0)
 
@@ -658,14 +717,7 @@ class AndroidMockSiteDriver:
                 except Exception:
                     pass
 
-            # Coordinate fallback for the first visible feed action row.
-            try:
-                width, height = self.d.window_size()
-                self.d.click(int(width * random.uniform(0.12, 0.22)), int(height * random.uniform(0.55, 0.78)))
-                self.think(0.2, 0.5)
-                return True
-            except Exception:
-                pass
+            self.logger.log("like_post", self.target, "not_found", "like_button_not_visible_on_current_page")
         return self._click_text("Like") or self._click_xpath_text("Like")
 
     def _open_profile_from_feed(self) -> bool:
@@ -1036,7 +1088,8 @@ class AndroidMockSiteDriver:
             return
         self.logger.log("network_open", self.target, "started", "browse_suggestions")
         if not self._open_network_tab():
-            self.logger.log("network_open", self.target, "failed", "network tab not clickable")
+            self.logger.log("network_open", self.target, "failed", f"network tab not clickable,current_page={self._current_mock_page_name()}")
+            self._record_page_progress("network_open_failed")
             return
         self.think(1.4, 3.8)
         if random.random() < 0.45:
