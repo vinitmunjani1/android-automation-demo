@@ -598,8 +598,12 @@ class AndroidMockSiteDriver:
             self._analyze_open_profile("connection_request_profile")
             self._open_notifications_again()
             self._accept_connection_request()
+            self._go_home()
+            self.logger.log("notifications_home", self.target, "success", "returned_home_after_request_check")
         else:
             self.logger.log("connection_request", self.target, "not_found", "no visible mock request")
+            self._go_home()
+            self.logger.log("notifications_home", self.target, "success", "returned_home_empty_notifications")
 
     def _open_notifications_again(self) -> None:
         self._open_notifications_tab()
