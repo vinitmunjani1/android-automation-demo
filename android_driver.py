@@ -233,10 +233,30 @@ class AndroidMockSiteDriver:
             else:
                 self.logger.log("like_post", f"visible_post_{index}", "not_found")
 
-        self._human_swipe(direction="up")
-        self.logger.log("scroll_feed", f"post_window_{index}", "success", "humanized=random_delay+random_distance")
+        self._scroll_content_down()
+        self.logger.log("scroll_feed", f"post_window_{index}", "success", "content_down_safe_scroll")
         if random.random() < 0.25:
             self.think(0.8, 2.0)
+
+    def _scroll_content_down(self) -> None:
+        """Scroll page content downward without triggering pull-to-refresh.
+
+        In Android gesture terms this is a finger swipe up. Keep the gesture
+        away from the very top/status area and bottom nav so pages don't
+        refresh or tap navigation while trying to read more content.
+        """
+        if self.target == "app":
+            try:
+                width, height = self.d.window_size()
+                x = int(width * random.uniform(0.46, 0.56))
+                start_y = int(height * random.uniform(0.76, 0.84))
+                end_y = int(height * random.uniform(0.30, 0.40))
+                self.d.swipe(x, start_y, x + random.randint(-18, 18), end_y, duration=random.uniform(0.25, 0.55))
+                time.sleep(random.uniform(0.25, 0.75))
+                return
+            except Exception:
+                pass
+        self._human_swipe(direction="up")
 
     def _human_swipe(self, direction: str = "up") -> None:
         width, height = self.d.window_size()
@@ -516,9 +536,8 @@ class AndroidMockSiteDriver:
         self.logger.log("profile_analysis_start", label, "success", f"scrolls={passes}")
         for i in range(1, passes + 1):
             self.think(1.0, 3.2)
-            direction = "up" if random.random() < 0.78 else "down"
-            self._human_swipe(direction=direction)
-            self.logger.log("profile_scroll", f"{label}_{i}", "success", f"direction={direction}")
+            self._scroll_content_down()
+            self.logger.log("profile_scroll", f"{label}_{i}", "success", "content_down_safe_scroll")
         if random.random() < 0.45:
             self.think(0.8, 2.0)
         self.logger.log("profile_analysis_end", label, "success", "humanized_profile_review")
@@ -567,10 +586,40 @@ class AndroidMockSiteDriver:
 
     def _click_connect_button(self) -> bool:
         if self.target == "app":
+            selectors = [
+                self.d(resourceId=self.rid("connect_button")),
+                self.d(resourceId=self.rid("connect_button"), textContains="Connect"),
+                self.d(text="Connect"),
+                self.d(textContains="Connect"),
+                self.d(descriptionContains="Connect"),
+            ]
+            for selector in selectors:
+                try:
+                    if selector.exists(timeout=1.0):
+                        selector.click()
+                        self.think(0.3, 0.8)
+                        return True
+                except Exception:
+                    pass
+
+            # If the profile is slightly scrolled, bring top actions back into
+            # view and retry once before using coordinates.
             try:
+                self._fast_profile_reverse_swipe()
+                self.think(0.4, 0.9)
                 button = self.d(resourceId=self.rid("connect_button"))
-                if button.exists(timeout=0.8):
+                if button.exists(timeout=1.0):
                     button.click()
+                    return True
+            except Exception:
+                pass
+
+            # Mock profile top-card fallback: Connect is the left primary CTA.
+            try:
+                width, height = self.d.window_size()
+                for y_ratio in (0.34, 0.40, 0.46):
+                    self.d.click(int(width * random.uniform(0.18, 0.34)), int(height * y_ratio))
+                    self.think(0.3, 0.8)
                     return True
             except Exception:
                 pass
@@ -585,7 +634,7 @@ class AndroidMockSiteDriver:
             float(self.config.get("pre_notifications_wait_max_seconds", 4.2)),
         )
         if not self._open_notifications_tab():
-            self.logger.log("notifications_open", self.target, "failed", "alerts tab not clickable")
+            self.logger.log("notifications_open", self.target, "failed", "notifications tab not clickable")
             return
 
         self.logger.log("notifications_scan", self.target, "success", "processing_visible_notifications")
@@ -619,7 +668,7 @@ class AndroidMockSiteDriver:
         except Exception:
             pass
 
-        for selector in [self.d(textContains="Alerts"), self.d(descriptionContains="Notifications")]:
+        for selector in [self.d(resourceId=self.rid("notifications_tab")), self.d(textContains="Notifications"), self.d(textContains="Alerts"), self.d(descriptionContains="Notifications")]:
             try:
                 if selector.exists(timeout=0.8):
                     selector.click()
@@ -629,7 +678,7 @@ class AndroidMockSiteDriver:
             except Exception:
                 pass
 
-        # Bottom nav fallback. Alerts is the 4th of 5 tabs, around 70% width.
+        # Bottom nav fallback. Notifications is the 4th of 5 tabs, around 70% width.
         try:
             width, height = self.d.window_size()
             for x_ratio in (0.70, 0.72, 0.68):
@@ -901,7 +950,16 @@ class AndroidMockSiteDriver:
             try:
                 search = self.d(resourceId=self.rid("search_input"))
                 if search.exists(timeout=1.2):
-                    search.click()
+                    try:
+                        bounds = search.info.get("bounds") or {}
+                        left, top = int(bounds.get("left", 0)), int(bounds.get("top", 0))
+                        right, bottom = int(bounds.get("right", 0)), int(bounds.get("bottom", 0))
+                        if right > left and bottom > top:
+                            self.d.click((left + right) // 2, (top + bottom) // 2)
+                        else:
+                            search.click()
+                    except Exception:
+                        search.click()
                     self.think(0.2, 0.6)
                     try:
                         search.clear_text()
@@ -910,6 +968,35 @@ class AndroidMockSiteDriver:
                     return True
             except Exception:
                 pass
+
+            candidates = [
+                self.d(description="Search people"),
+                self.d(text="Search"),
+                self.d(text="Search people"),
+                self.d(className="android.widget.EditText"),
+            ]
+            for candidate in candidates:
+                try:
+                    if candidate.exists(timeout=0.7):
+                        candidate.click()
+                        self.think(0.2, 0.6)
+                        self.d.clear_text()
+                        return True
+                except Exception:
+                    pass
+
+            # Top-bar coordinate fallback. Previous fallback clicked too low and
+            # could hit the profile banner; keep this inside the search field row.
+            width, height = self.d.window_size()
+            x = int(width * random.uniform(0.28, 0.66))
+            y = int(height * random.uniform(0.045, 0.085))
+            self.d.click(x, y)
+            time.sleep(random.uniform(0.35, 0.9))
+            try:
+                self.d.clear_text()
+            except Exception:
+                pass
+            return True
 
         candidates = [
             self.d(description="Search people"),
@@ -925,17 +1012,7 @@ class AndroidMockSiteDriver:
                     return True
             except Exception:
                 pass
-
-        width, height = self.d.window_size()
-        x = int(width * random.uniform(0.34, 0.62))
-        y = int(height * random.uniform(0.15, 0.23))
-        self.d.click(x, y)
-        time.sleep(random.uniform(0.35, 0.9))
-        try:
-            self.d.clear_text()
-        except Exception:
-            pass
-        return True
+        return False
 
     def _click_text(self, text: str) -> bool:
         selectors = [
