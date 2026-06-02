@@ -101,6 +101,7 @@ class AndroidMockSiteDriver:
             self._type_text_human(contact.name)
             self.logger.log("search_person", contact.name, "success", "typed_humanized=true")
             self.think(1.2, 3.0)
+            self._apply_candidate_search_filters(contact.name)
 
             if not self._click_contact(contact.name):
                 self.logger.log("open_profile", contact.name, "not_found")
@@ -472,6 +473,7 @@ class AndroidMockSiteDriver:
         # Do not press Back here. On some Android devices the keyboard is not
         # considered open after adb text input, so Back closes the mock app.
         self.think(1.2, 3.0)
+        self._apply_candidate_search_filters(contact.name)
 
         if not self._click_contact(contact.name):
             self.logger.log("open_profile", contact.name, "not_found")
@@ -1495,6 +1497,132 @@ class AndroidMockSiteDriver:
         self.logger.log("message_send", self.target, "failed", "input_or_send_missing")
         return False
 
+    def _apply_candidate_search_filters(self, search_query: str) -> None:
+        settings = self.config.get("candidate_discovery", {})
+        if self.target != "app" or not settings.get("apply_people_search_filters", True):
+            return
+        try:
+            if self._select_people_results_filter(search_query):
+                self.think(0.7, 1.5)
+            if settings.get("apply_connection_filters", True):
+                selected = self._select_connection_type_filters(search_query)
+                self.logger.log("candidate_search_filters", search_query, "applied", f"people=true,connections={','.join(selected) or 'none'}")
+            else:
+                self.logger.log("candidate_search_filters", search_query, "applied", "people=true,connections=disabled")
+        except Exception as exc:
+            self.logger.log("candidate_search_filters", search_query, "failed", repr(exc))
+
+    def _select_people_results_filter(self, search_query: str) -> bool:
+        selectors = [
+            self.d(text="People"),
+            self.d(textContains="People"),
+            self.d(description="People"),
+            self.d(descriptionContains="People"),
+        ]
+        for selector in selectors:
+            try:
+                if selector.exists(timeout=0.8):
+                    selector.click()
+                    self.logger.log("search_filter_people", search_query, "clicked", "selector")
+                    return True
+            except Exception:
+                pass
+        try:
+            # LinkedIn usually exposes result-type chips near the top. Tap a few
+            # likely chip positions, then trust the subsequent profile-result
+            # checks to reject non-profile pages.
+            width, height = self.d.window_size()
+            for x_ratio in (0.18, 0.28, 0.38):
+                self.d.click(int(width * x_ratio), int(height * 0.16))
+                self.think(0.3, 0.8)
+                if self.d(textContains="People").exists(timeout=0.2) or self.d(textContains="Connect").exists(timeout=0.2):
+                    self.logger.log("search_filter_people", search_query, "clicked", f"coordinate_x={x_ratio}")
+                    return True
+        except Exception:
+            pass
+        self.logger.log("search_filter_people", search_query, "not_found", "continuing")
+        return False
+
+    def _select_connection_type_filters(self, search_query: str) -> list[str]:
+        selected: list[str] = []
+        if not self._open_connection_filter_menu(search_query):
+            return selected
+        for label in self.config.get("candidate_discovery", {}).get("connection_filters", ["1st", "2nd"]):
+            if self._click_filter_option(str(label)):
+                selected.append(str(label))
+                self.think(0.2, 0.6)
+        self._apply_open_filter_dialog(search_query)
+        return selected
+
+    def _open_connection_filter_menu(self, search_query: str) -> bool:
+        selectors = [
+            self.d(text="Connections"),
+            self.d(textContains="Connections"),
+            self.d(descriptionContains="Connections"),
+            self.d(text="All filters"),
+            self.d(textContains="All filters"),
+            self.d(descriptionContains="All filters"),
+        ]
+        for selector in selectors:
+            try:
+                if selector.exists(timeout=0.8):
+                    selector.click()
+                    self.think(0.6, 1.2)
+                    self.logger.log("search_filter_connections", search_query, "opened", "selector")
+                    return True
+            except Exception:
+                pass
+        try:
+            width, height = self.d.window_size()
+            # Top filter chips often sit just below the search bar.
+            for x_ratio in (0.48, 0.62, 0.76):
+                self.d.click(int(width * x_ratio), int(height * 0.16))
+                self.think(0.5, 1.0)
+                if self.d(textContains="1st").exists(timeout=0.3) or self.d(textContains="2nd").exists(timeout=0.3):
+                    self.logger.log("search_filter_connections", search_query, "opened", f"coordinate_x={x_ratio}")
+                    return True
+        except Exception:
+            pass
+        self.logger.log("search_filter_connections", search_query, "not_found", "continuing")
+        return False
+
+    def _click_filter_option(self, label: str) -> bool:
+        option_texts = [label, f"{label} connections", f"{label} degree", f"{label}-degree"]
+        selectors = []
+        for text in option_texts:
+            selectors.extend([self.d(text=text), self.d(textContains=text), self.d(descriptionContains=text)])
+        for selector in selectors:
+            try:
+                if selector.exists(timeout=0.6):
+                    selector.click()
+                    return True
+            except Exception:
+                pass
+        return False
+
+    def _apply_open_filter_dialog(self, search_query: str) -> None:
+        for selector in [
+            self.d(text="Show results"),
+            self.d(textContains="Show results"),
+            self.d(text="Apply"),
+            self.d(textContains="Apply"),
+            self.d(descriptionContains="Show results"),
+            self.d(descriptionContains="Apply"),
+        ]:
+            try:
+                if selector.exists(timeout=0.7):
+                    selector.click()
+                    self.logger.log("search_filter_apply", search_query, "clicked", "selector")
+                    self.think(0.8, 1.5)
+                    return
+            except Exception:
+                pass
+        try:
+            self.d.press("back")
+            self.think(0.5, 1.0)
+        except Exception:
+            pass
+
     def _click_contact(self, name: str) -> bool:
         if self.target == "app":
             for attempt in range(1, 3):
@@ -1515,6 +1643,7 @@ class AndroidMockSiteDriver:
                             selector.click()
                             self.logger.log("search_show_all_results", name, "clicked", f"attempt={attempt}")
                             self.think(1.0, 2.0)
+                            self._apply_candidate_search_filters(name)
                             if self._click_visible_profile_result(name):
                                 return True
                     except Exception:

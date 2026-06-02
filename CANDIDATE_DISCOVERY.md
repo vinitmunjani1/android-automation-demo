@@ -63,7 +63,8 @@ mock_driver.py / android_driver.py / linkedin_review_driver.py
 4. After the flow opens a profile, `android_driver.py` snapshots visible profile text.
 5. The profile is scored against `candidate_profile.json`.
 6. The scored candidate is appended to `output/candidate_discovery/latest.json`.
-7. If the configured app package is real LinkedIn (`com.linkedin.android`), auto-connect is skipped and logged as `manual_required`; you click Connect manually.
+7. Before opening results, the search flow tries to apply LinkedIn filters: `People` plus connection types `1st` and `2nd`.
+8. If the configured app package is real LinkedIn (`com.linkedin.android`), auto-connect is skipped and logged as `manual_required`; you click Connect manually.
 
 ### Real LinkedIn review-assistant workflow
 
@@ -158,7 +159,10 @@ If `--search-query` is omitted, discovery uses the first `search_queries` value 
   "candidate_dwell_min_seconds": 0.4,
   "candidate_dwell_max_seconds": 1.4,
   "score_existing_profile_flow": true,
-  "manual_connect_required": false
+  "manual_connect_required": false,
+  "apply_people_search_filters": true,
+  "apply_connection_filters": true,
+  "connection_filters": ["1st", "2nd"]
 },
 "candidate_scoring": {
   "title_keywords": ["founder", "ceo", "head", "vp", "manager", "director"],

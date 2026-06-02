@@ -77,7 +77,13 @@
     "score_existing_profile_flow": true,
     "manual_connect_required": false,
     "profile_finder_default": false,
-    "max_search_queries_per_run": 3
+    "max_search_queries_per_run": 3,
+    "apply_people_search_filters": true,
+    "apply_connection_filters": true,
+    "connection_filters": [
+      "1st",
+      "2nd"
+    ]
   },
   "linkedin_review_assistant": {
     "visible_screen_scans": 1,
