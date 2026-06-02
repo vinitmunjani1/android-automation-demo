@@ -43,7 +43,7 @@
     "burst_pause_min_seconds": 0.02,
     "burst_pause_max_seconds": 0.16
   },
-  "action_order": "random",
+  "action_order": "sequential",
   "random_journey": {
     "min_actions": 8,
     "max_actions": 18,
@@ -60,7 +60,7 @@
   "candidate_profile_file": "candidate_profile.json",
   "stuck_page_watchdog_enabled": true,
   "stuck_page_same_signature_threshold": 2,
-  "mode": "mock",
+  "mode": "android",
   "action_transition": {
     "min_seconds": 0.05,
     "max_seconds": 0.2
@@ -74,7 +74,9 @@
     "candidate_dwell_min_seconds": 0.4,
     "candidate_dwell_max_seconds": 1.4,
     "score_existing_profile_flow": true,
-    "manual_connect_required": false
+    "manual_connect_required": false,
+    "profile_finder_default": true,
+    "max_search_queries_per_run": 3
   },
   "linkedin_review_assistant": {
     "visible_screen_scans": 1,

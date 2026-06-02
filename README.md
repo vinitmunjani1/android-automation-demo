@@ -18,11 +18,19 @@ It demonstrates scheduling, feed scrolling, randomized interactions, CSV-driven 
 - `CANDIDATE_DISCOVERY.md` — discovery architecture, schema, config, and edge-case handling
 - `logs/actions.csv` — action log generated at runtime
 
-## Quick local run
+## Quick run
 
 ```bash
 cd android_automation_demo
-python3 main.py --now --mode mock
+python3 main.py --now
+```
+
+The feature branch defaults to Android candidate profile finder mode. It opens the configured app package, uses `candidate_profile.json` search queries, scores opened profiles, and writes JSON output.
+
+For mock validation only:
+
+```bash
+python3 main.py --now --mode mock --discover-candidates --search-query founder
 ```
 
 ## Candidate discovery
@@ -35,7 +43,19 @@ python3 main.py --now --mode mock --discover-candidates --search-query founder
 
 Edit `candidate_profile.json` whenever you want to change search queries, keywords, weights, and score thresholds.
 
-The existing Android search/find/open-profile flow now also scores each opened profile and saves it to JSON. If `mock_app_package`/the active app package is `com.linkedin.android`, it will score the found profile but log Connect as manual-required instead of clicking it.
+The existing Android search/find/open-profile flow now runs by default for candidate discovery. It uses `candidate_profile.json` search queries, scores each opened profile, and saves it to JSON. If `mock_app_package`/the active app package is `com.linkedin.android`, it scores the found profile but logs Connect as manual-required instead of clicking it.
+
+Run it with:
+
+```bash
+python3 main.py --now
+```
+
+or explicitly:
+
+```bash
+python3 main.py --now --mode android
+```
 
 To score real LinkedIn profiles/results without running the existing finder, manually open the LinkedIn Android app to a search result or profile screen, then run:
 

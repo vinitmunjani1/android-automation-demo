@@ -82,6 +82,16 @@ def build_driver(mode: str, config: dict, logger: ActionLogger):
     raise ValueError(f"Unsupported mode: {mode}")
 
 
+def candidate_search_contacts(config: dict, fallback_contacts: list[Contact]) -> list[Contact]:
+    discovery = config.get("candidate_discovery", {})
+    queries = discovery.get("search_queries") or []
+    max_queries = int(discovery.get("max_search_queries_per_run", 0)) or None
+    contacts = [Contact(name=str(query), title="candidate search", company="") for query in queries if str(query).strip()]
+    if max_queries:
+        contacts = contacts[:max_queries]
+    return contacts or fallback_contacts
+
+
 def run_candidate_discovery(mode: str, config: dict, search_query: str, logger: ActionLogger, resume: bool = True) -> None:
     driver = build_driver(mode, config, logger)
     driver.open_app()
@@ -89,6 +99,21 @@ def run_candidate_discovery(mode: str, config: dict, search_query: str, logger: 
     service = CandidateDiscoveryService(driver, config, logger, output_dir)
     run = service.run(search_query, resume=resume)
     logger.log("candidate_discovery_complete", search_query, "success", f"run_id={run.run_id},candidates={len(run.candidates)}")
+
+
+def run_candidate_profile_finder(mode: str, config: dict, contacts: list[Contact], logger: ActionLogger) -> None:
+    driver = build_driver(mode, config, logger)
+    search_contacts = candidate_search_contacts(config, contacts)
+    try:
+        driver.open_app()
+        driver.search_and_visit_contacts(search_contacts)
+        logger.log("candidate_profile_finder_complete", mode, "success", f"queries={len(search_contacts)}")
+    except KeyboardInterrupt:
+        logger.log("candidate_profile_finder_interrupted", mode, "stopped", "KeyboardInterrupt")
+        raise
+    except Exception as exc:
+        logger.log("candidate_profile_finder_failed", mode, "error", repr(exc))
+        raise
 
 
 def run_once(mode: str, config: dict, contacts: list[Contact], logger: ActionLogger) -> None:
@@ -140,6 +165,13 @@ def main() -> int:
 
     logger.log("validate", "config", "success", f"mode={mode},log_file={log_file}")
     logger.log("validate", "contacts", "success", f"count={len(contacts)}")
+    if config.get("candidate_discovery", {}).get("profile_finder_default", False):
+        logger.log(
+            "validate",
+            "candidate_profile_queries",
+            "success",
+            f"count={len(candidate_search_contacts(config, contacts))}",
+        )
 
     if args.dry_run:
         return 0
@@ -155,6 +187,8 @@ def main() -> int:
         if not search_query:
             raise ValueError("Candidate discovery requires --search-query or candidate_discovery.default_search_query")
         run_candidate_discovery(mode, config, search_query, logger, resume=not args.no_resume)
+    elif mode == "android" and config.get("candidate_discovery", {}).get("profile_finder_default", False):
+        run_candidate_profile_finder(mode, config, contacts, logger)
     else:
         run_once(mode, config, contacts, logger)
     return 0
