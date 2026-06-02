@@ -58,5 +58,9 @@
   "log_file": "logs/actions_linkedin_id_migration.csv",
   "stuck_page_watchdog_enabled": true,
   "stuck_page_same_signature_threshold": 2,
-  "mode": "mock"
+  "mode": "mock",
+  "action_transition": {
+    "min_seconds": 0.05,
+    "max_seconds": 0.2
+  }
 }

@@ -46,6 +46,12 @@ class AndroidMockSiteDriver:
     def think(self, min_seconds: float = 0.8, max_seconds: float = 2.4) -> None:
         time.sleep(random.uniform(min_seconds, max_seconds))
 
+    def action_transition_pause(self) -> None:
+        settings = self.config.get("action_transition", {})
+        lo = float(settings.get("min_seconds", 0.05))
+        hi = float(settings.get("max_seconds", 0.20))
+        time.sleep(random.uniform(lo, hi))
+
     def rid(self, name: str) -> str:
         return f"{self.app_package}:id/{name}"
 
@@ -99,7 +105,7 @@ class AndroidMockSiteDriver:
                     self.logger.log("connect", contact.name, "not_found")
             else:
                 self.logger.log("connect", contact.name, "skipped", "random decision")
-            self.think(1.0, 2.8)
+            self.action_transition_pause()
 
     def run_random_journey(self, contacts: list[Contact]) -> None:
         """Run a randomized, bounded mock QA journey.
@@ -149,7 +155,7 @@ class AndroidMockSiteDriver:
             elif action == "home":
                 self._go_home()
                 self.logger.log("home", self.target, "success", "random navigation")
-                self.think(0.8, 2.4)
+                self.action_transition_pause()
             elif action == "notifications":
                 self._check_notifications()
             elif action == "network":
@@ -348,7 +354,7 @@ class AndroidMockSiteDriver:
                 self.logger.log("connect", contact.name, "not_found")
         else:
             self.logger.log("connect", contact.name, "skipped", "random decision")
-        self.think(1.0, 2.8)
+        self.action_transition_pause()
 
     def _scroll_feed_once(self, index: int) -> None:
         if self.target == "app" and not self._ensure_current_page("home_feed", f"feed_{index}"):
@@ -364,7 +370,7 @@ class AndroidMockSiteDriver:
                 self.logger.log("open_profile_from_feed", f"visible_post_{index}", "success", "random feed profile open")
                 self._analyze_open_profile(f"feed_profile_{index}")
                 self._go_home()
-                self.think(0.8, 2.0)
+                self.action_transition_pause()
             else:
                 self.logger.log("open_profile_from_feed", f"visible_post_{index}", "not_found", "no visible feed profile link")
 
@@ -384,7 +390,7 @@ class AndroidMockSiteDriver:
         else:
             self.logger.log("scroll_feed", f"post_window_{index}", "no_change", "page_signature_unchanged")
         if random.random() < 0.25:
-            self.think(0.8, 2.0)
+            self.action_transition_pause()
 
     def _scroll_content_down(self) -> None:
         """Scroll page content downward without triggering pull-to-refresh.
@@ -771,7 +777,7 @@ class AndroidMockSiteDriver:
             self._scroll_profile_content_down()
             self.logger.log("profile_scroll", f"{label}_{i}", "success", "profile_right_side_safe_scroll")
         if random.random() < 0.45:
-            self.think(0.8, 2.0)
+            self.action_transition_pause()
         self.logger.log("profile_analysis_end", label, "success", "humanized_profile_review")
 
     def _return_profile_to_top(self, label: str) -> None:
@@ -1060,7 +1066,7 @@ class AndroidMockSiteDriver:
         if self.target != "app":
             return False
         self.logger.log("repost", self.target, "started", "visible_post")
-        self.think(0.8, 2.0)
+        self.action_transition_pause()
         selectors = [
             self.d(resourceId=self.rid("repost_button"), text="Repost"),
             self.d(text="Repost"),
@@ -1094,7 +1100,7 @@ class AndroidMockSiteDriver:
             self.logger.log("network_open", self.target, "failed", f"network tab not clickable,current_page={self._current_mock_page_name()}")
             self._record_page_progress("network_open_failed")
             return
-        self.think(1.4, 3.8)
+        self.action_transition_pause()
         if random.random() < 0.45:
             self._scroll_content_down()
             self.think(0.8, 2.2)
@@ -1157,11 +1163,11 @@ class AndroidMockSiteDriver:
         if not self._open_messages_page():
             self.logger.log("messages_open", self.target, "failed", "messages not clickable")
             return
-        self.think(1.4, 3.5)
+        self.action_transition_pause()
         if not self._open_conversation():
             self.logger.log("conversation_open", self.target, "not_found", "no conversation")
             return
-        self.think(1.2, 3.2)
+        self.action_transition_pause()
         self._type_mock_message_and_send()
 
     def _open_messages_page(self) -> bool:
