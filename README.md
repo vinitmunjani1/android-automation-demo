@@ -25,7 +25,7 @@ cd android_automation_demo
 python3 main.py --now
 ```
 
-The feature branch defaults to Android candidate profile finder mode. It opens the configured app package, uses `candidate_profile.json` search queries, scores opened profiles, and writes JSON output.
+The feature branch defaults to Android mode and uses `candidate_profile.json` search queries as the profile-finder input. `contacts.csv` is no longer used unless `allow_legacy_contacts_csv` is explicitly enabled.
 
 For mock validation only:
 
@@ -43,7 +43,7 @@ python3 main.py --now --mode mock --discover-candidates --search-query founder
 
 Edit `candidate_profile.json` whenever you want to change search queries, keywords, weights, and score thresholds.
 
-The existing Android search/find/open-profile flow now runs by default for candidate discovery. It uses `candidate_profile.json` search queries, scores each opened profile, and saves it to JSON. If `mock_app_package`/the active app package is `com.linkedin.android`, it scores the found profile but logs Connect as manual-required instead of clicking it.
+The existing Android action runner now includes profile-finder actions that use `candidate_profile.json` search queries, score each opened profile, and save it to JSON. If `mock_app_package`/the active app package is `com.linkedin.android`, it keeps the action mix to profile finder/home/pause and logs Connect as manual-required instead of clicking it.
 
 Run it with:
 

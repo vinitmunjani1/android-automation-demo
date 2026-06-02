@@ -43,7 +43,7 @@
     "burst_pause_min_seconds": 0.02,
     "burst_pause_max_seconds": 0.16
   },
-  "action_order": "sequential",
+  "action_order": "random",
   "random_journey": {
     "min_actions": 8,
     "max_actions": 18,
@@ -52,6 +52,7 @@
     "idle_max_seconds": 1.0
   },
   "max_contacts_per_run": 10,
+  "allow_legacy_contacts_csv": false,
   "mock_site_url": "http://127.0.0.1:8000",
   "android_target": "app",
   "mock_app_package": "com.linkedin.android",
@@ -75,7 +76,7 @@
     "candidate_dwell_max_seconds": 1.4,
     "score_existing_profile_flow": true,
     "manual_connect_required": false,
-    "profile_finder_default": true,
+    "profile_finder_default": false,
     "max_search_queries_per_run": 3
   },
   "linkedin_review_assistant": {

@@ -243,10 +243,11 @@ class AndroidMockSiteDriver:
         return candidates
 
     def run_random_journey(self, contacts: list[Contact]) -> None:
-        """Run a randomized, bounded mock QA journey.
+        """Run a randomized, bounded journey.
 
-        This varies test coverage order for the controlled mock app/site. It is
-        not intended for stealth or for use on real social platforms.
+        For real LinkedIn package runs, keep the action mix limited to profile
+        finder/search, home, and pauses. Mock-only engagement actions remain
+        available for the controlled MockIn harness.
         """
         settings = self.config.get("random_journey", {})
         min_actions = int(settings.get("min_actions", 8))
@@ -264,11 +265,14 @@ class AndroidMockSiteDriver:
         last_action = ""
         repeated = 0
         for step in range(1, action_count + 1):
-            choices = ["feed", "feed", "pause", "home"]
-            if self.target == "app":
-                choices.extend(["notifications", "network", "messages", "repost"])
+            choices = ["pause", "home"]
+            real_linkedin = self.app_package == self.config.get("linkedin_app_package", "com.linkedin.android")
             if remaining_contacts:
-                choices.extend(["search", "search"])
+                choices.extend(["profile_finder", "profile_finder", "profile_finder"])
+            if not real_linkedin:
+                choices.extend(["feed", "feed"])
+                if self.target == "app":
+                    choices.extend(["notifications", "network", "messages", "repost"])
             action = random.choice(choices)
 
             # Avoid comically long same-action streaks while keeping the order varied.
@@ -285,7 +289,7 @@ class AndroidMockSiteDriver:
             if action == "feed":
                 for _ in range(random.randint(1, int(settings.get("max_feed_scrolls_per_action", 3)))):
                     self._scroll_feed_once(step)
-            elif action == "search" and remaining_contacts:
+            elif action in {"search", "profile_finder"} and remaining_contacts:
                 self._visit_contact(remaining_contacts.pop(0))
             elif action == "home":
                 self._go_home()

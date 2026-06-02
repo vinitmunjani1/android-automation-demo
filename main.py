@@ -3,7 +3,6 @@ from __future__ import annotations
 import argparse
 import csv
 import json
-import sys
 from pathlib import Path
 
 from candidate_discovery import CandidateDiscoveryService
@@ -47,27 +46,46 @@ def load_config(path: Path) -> dict:
     return config
 
 
-def load_contacts(path: Path, max_contacts: int | None = None) -> list[Contact]:
+def load_legacy_csv_contacts(path: Path, max_contacts: int | None = None) -> list[Contact]:
+    """Optional backwards-compatible CSV loader.
+
+    Candidate/profile-finder runs use candidate_profile.json by default. This
+    CSV path is only used when config enables allow_legacy_contacts_csv.
+    """
+    if not path.exists():
+        return []
     seen: set[str] = set()
     contacts: list[Contact] = []
     with path.open("r", encoding="utf-8", newline="") as f:
         reader = csv.DictReader(f)
-        for row_num, row in enumerate(reader, start=2):
+        for row in reader:
             name = (row.get("name") or "").strip()
             title = (row.get("title") or "").strip()
             company = (row.get("company") or "").strip()
             if not name:
-                print(f"Skipping row {row_num}: missing name", file=sys.stderr)
                 continue
             key = name.lower()
             if key in seen:
-                print(f"Skipping duplicate contact: {name}", file=sys.stderr)
                 continue
             seen.add(key)
             contacts.append(Contact(name=name, title=title, company=company))
             if max_contacts and len(contacts) >= max_contacts:
                 break
     return contacts
+
+
+def load_candidate_profile_targets(config: dict, legacy_contacts: list[Contact] | None = None) -> list[Contact]:
+    discovery = config.get("candidate_discovery", {})
+    queries = discovery.get("search_queries") or []
+    max_queries = int(discovery.get("max_search_queries_per_run", 0)) or None
+    targets = [Contact(name=str(query), title="candidate profile finder", company="") for query in queries if str(query).strip()]
+    if max_queries:
+        targets = targets[:max_queries]
+    if targets:
+        return targets
+    if config.get("allow_legacy_contacts_csv", False):
+        return legacy_contacts or []
+    raise ValueError("No candidate_profile.json search_queries configured; CSV contacts are disabled by default")
 
 
 def build_driver(mode: str, config: dict, logger: ActionLogger):
@@ -82,16 +100,6 @@ def build_driver(mode: str, config: dict, logger: ActionLogger):
     raise ValueError(f"Unsupported mode: {mode}")
 
 
-def candidate_search_contacts(config: dict, fallback_contacts: list[Contact]) -> list[Contact]:
-    discovery = config.get("candidate_discovery", {})
-    queries = discovery.get("search_queries") or []
-    max_queries = int(discovery.get("max_search_queries_per_run", 0)) or None
-    contacts = [Contact(name=str(query), title="candidate search", company="") for query in queries if str(query).strip()]
-    if max_queries:
-        contacts = contacts[:max_queries]
-    return contacts or fallback_contacts
-
-
 def run_candidate_discovery(mode: str, config: dict, search_query: str, logger: ActionLogger, resume: bool = True) -> None:
     driver = build_driver(mode, config, logger)
     driver.open_app()
@@ -101,9 +109,9 @@ def run_candidate_discovery(mode: str, config: dict, search_query: str, logger: 
     logger.log("candidate_discovery_complete", search_query, "success", f"run_id={run.run_id},candidates={len(run.candidates)}")
 
 
-def run_candidate_profile_finder(mode: str, config: dict, contacts: list[Contact], logger: ActionLogger) -> None:
+def run_candidate_profile_finder(mode: str, config: dict, targets: list[Contact], logger: ActionLogger) -> None:
     driver = build_driver(mode, config, logger)
-    search_contacts = candidate_search_contacts(config, contacts)
+    search_contacts = targets
     try:
         driver.open_app()
         driver.search_and_visit_contacts(search_contacts)
@@ -116,16 +124,16 @@ def run_candidate_profile_finder(mode: str, config: dict, contacts: list[Contact
         raise
 
 
-def run_once(mode: str, config: dict, contacts: list[Contact], logger: ActionLogger) -> None:
+def run_once(mode: str, config: dict, targets: list[Contact], logger: ActionLogger) -> None:
     driver = build_driver(mode, config, logger)
     try:
         driver.open_app()
         if config.get("action_order", "sequential") == "random" and hasattr(driver, "run_random_journey"):
-            driver.run_random_journey(contacts)
+            driver.run_random_journey(targets)
         else:
             driver.scroll_feed()
-            driver.search_and_visit_contacts(contacts)
-        logger.log("run_complete", mode, "success", f"contacts={len(contacts)}")
+            driver.search_and_visit_contacts(targets)
+        logger.log("run_complete", mode, "success", f"profile_targets={len(targets)}")
     except KeyboardInterrupt:
         logger.log("run_interrupted", mode, "stopped", "KeyboardInterrupt")
         raise
@@ -137,7 +145,7 @@ def run_once(mode: str, config: dict, contacts: list[Contact], logger: ActionLog
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Android automation proof-of-concept with mock mode and LinkedIn review-assistant scoring")
     parser.add_argument("--config", default=str(ROOT / "config.json"))
-    parser.add_argument("--contacts", default=str(ROOT / "contacts.csv"))
+    parser.add_argument("--contacts", default=str(ROOT / "contacts.csv"), help="Legacy CSV input; disabled unless allow_legacy_contacts_csv=true")
     parser.add_argument("--mode", choices=["mock", "android", "linkedin-review"], default=None)
     parser.add_argument("--now", action="store_true", help="Run immediately instead of waiting for random time window")
     parser.add_argument("--dry-run", action="store_true", help="Validate config/contacts only")
@@ -157,21 +165,17 @@ def main() -> int:
     config = load_config(Path(args.config))
     mode = args.mode or config.get("mode", "mock")
     max_contacts = int(config.get("max_contacts_per_run", 0)) or None
-    contacts = load_contacts(Path(args.contacts), max_contacts=max_contacts)
+    legacy_contacts = load_legacy_csv_contacts(Path(args.contacts), max_contacts=max_contacts) if config.get("allow_legacy_contacts_csv", False) else []
+    profile_targets = load_candidate_profile_targets(config, legacy_contacts)
     log_file = Path(args.log_file) if args.log_file else Path(
         config.get("log_file", ROOT / "logs" / "actions_linkedin_id_migration.csv")
     )
     logger = ActionLogger(log_file)
 
     logger.log("validate", "config", "success", f"mode={mode},log_file={log_file}")
-    logger.log("validate", "contacts", "success", f"count={len(contacts)}")
-    if config.get("candidate_discovery", {}).get("profile_finder_default", False):
-        logger.log(
-            "validate",
-            "candidate_profile_queries",
-            "success",
-            f"count={len(candidate_search_contacts(config, contacts))}",
-        )
+    logger.log("validate", "candidate_profile_queries", "success", f"count={len(profile_targets)}")
+    if legacy_contacts:
+        logger.log("validate", "legacy_csv_contacts", "loaded", f"count={len(legacy_contacts)}")
 
     if args.dry_run:
         return 0
@@ -188,9 +192,9 @@ def main() -> int:
             raise ValueError("Candidate discovery requires --search-query or candidate_discovery.default_search_query")
         run_candidate_discovery(mode, config, search_query, logger, resume=not args.no_resume)
     elif mode == "android" and config.get("candidate_discovery", {}).get("profile_finder_default", False):
-        run_candidate_profile_finder(mode, config, contacts, logger)
+        run_candidate_profile_finder(mode, config, profile_targets, logger)
     else:
-        run_once(mode, config, contacts, logger)
+        run_once(mode, config, profile_targets, logger)
     return 0
 
 

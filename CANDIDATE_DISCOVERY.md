@@ -55,13 +55,15 @@ mock_driver.py / android_driver.py / linkedin_review_driver.py
 8. Stop on candidate limit, no-progress threshold, empty results, or max scrolls.
 9. Persist JSON atomically after the discovery pass.
 
-### Existing profile-finder scoring workflow
+### Existing action-runner profile-finder workflow
 
-1. Keep using the branch's existing Android search/find/open-profile flow.
-2. After the flow opens a profile, `android_driver.py` snapshots visible profile text.
-3. The profile is scored against `candidate_profile.json`.
-4. The scored candidate is appended to `output/candidate_discovery/latest.json`.
-5. If the configured app package is real LinkedIn (`com.linkedin.android`), auto-connect is skipped and logged as `manual_required`; you click Connect manually.
+1. The normal Android action runner uses `candidate_profile.json` search queries as its people/profile input.
+2. `contacts.csv` is disabled by default and only used if `allow_legacy_contacts_csv=true`.
+3. Profile-finder actions use the branch's existing search/find/open-profile flow.
+4. After the flow opens a profile, `android_driver.py` snapshots visible profile text.
+5. The profile is scored against `candidate_profile.json`.
+6. The scored candidate is appended to `output/candidate_discovery/latest.json`.
+7. If the configured app package is real LinkedIn (`com.linkedin.android`), auto-connect is skipped and logged as `manual_required`; you click Connect manually.
 
 ### Real LinkedIn review-assistant workflow
 
