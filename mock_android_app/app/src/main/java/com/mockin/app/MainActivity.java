@@ -29,6 +29,7 @@ public class MainActivity extends Activity {
     private LinearLayout feedList;
     private LinearLayout resultsList;
     private LinearLayout profilePage;
+    private LinearLayout notificationsPage;
     private EditText searchInput;
 
     private final List<Person> people = new ArrayList<>();
@@ -96,9 +97,16 @@ public class MainActivity extends Activity {
         profilePage.setVisibility(View.GONE);
         profilePage.setContentDescription("Profile page");
 
+        notificationsPage = new LinearLayout(this);
+        notificationsPage.setId(R.id.notifications_page);
+        notificationsPage.setOrientation(LinearLayout.VERTICAL);
+        notificationsPage.setVisibility(View.GONE);
+        notificationsPage.setContentDescription("Notifications page");
+
         content.addView(feedList);
         content.addView(resultsList);
         content.addView(profilePage);
+        content.addView(notificationsPage);
         scroll.addView(content);
         root.addView(scroll, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1));
         root.addView(bottomNav());
@@ -155,7 +163,11 @@ public class MainActivity extends Activity {
         nav.addView(navItem("⌂\nHome", true));
         nav.addView(navItem("👥\nNetwork", false));
         nav.addView(navItem("＋\nPost", false));
-        nav.addView(navItem("🔔\nAlerts", false));
+        TextView alerts = navItem("🔔\nAlerts", false);
+        alerts.setId(R.id.notifications_tab);
+        alerts.setContentDescription("Notifications");
+        alerts.setOnClickListener(v -> showNotifications());
+        nav.addView(alerts);
         nav.addView(navItem("💼\nJobs", false));
         return nav;
     }
@@ -477,6 +489,7 @@ public class MainActivity extends Activity {
         ProfileMockData data = profileData(p);
         feedList.setVisibility(View.GONE);
         resultsList.removeAllViews();
+        notificationsPage.setVisibility(View.GONE);
         profilePage.removeAllViews();
         profilePage.setVisibility(View.VISIBLE);
 
@@ -632,7 +645,62 @@ public class MainActivity extends Activity {
         searchInput.setText("");
         resultsList.removeAllViews();
         profilePage.setVisibility(View.GONE);
+        notificationsPage.setVisibility(View.GONE);
         feedList.setVisibility(View.VISIBLE);
+    }
+
+    private void showNotifications() {
+        searchInput.setText("");
+        feedList.setVisibility(View.GONE);
+        resultsList.removeAllViews();
+        profilePage.setVisibility(View.GONE);
+        notificationsPage.removeAllViews();
+        notificationsPage.setVisibility(View.VISIBLE);
+
+        LinearLayout header = card();
+        addText(header, "Notifications", 22, true, TEXT);
+        addText(header, "Mock connection requests and network updates", 13, false, MUTED);
+        notificationsPage.addView(header);
+
+        for (int i = 0; i < Math.min(3, people.size()); i++) {
+            notificationsPage.addView(connectionRequestCard(people.get((i + 1) % people.size())));
+        }
+
+        LinearLayout update = card();
+        addText(update, "Priya Mehta commented on a mock hiring systems post", 15, true, TEXT);
+        addText(update, "2h • Network update", 13, false, MUTED);
+        notificationsPage.addView(update);
+    }
+
+    private View connectionRequestCard(Person p) {
+        LinearLayout row = card();
+        row.setId(R.id.connection_request);
+        row.setContentDescription("Connection request from " + p.name);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setClickable(true);
+        row.setOnClickListener(v -> showProfile(p));
+
+        row.addView(avatar(initials(p.name), dp(54)));
+        LinearLayout details = new LinearLayout(this);
+        details.setOrientation(LinearLayout.VERTICAL);
+        details.setPadding(dp(12), 0, dp(8), 0);
+        addText(details, p.name + " sent you a connection request", 15, true, TEXT);
+        addText(details, p.title + " at " + p.company, 13, false, MUTED);
+        addText(details, "Tap card to review profile first", 12, false, BLUE);
+        row.addView(details, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
+
+        Button accept = filledButton("Accept");
+        accept.setId(R.id.accept_button);
+        accept.setContentDescription("Accept request from " + p.name);
+        accept.setOnClickListener(v -> {
+            Button b = (Button) v;
+            b.setText("Accepted");
+            b.setContentDescription("Accepted request from " + p.name);
+            b.setEnabled(false);
+        });
+        row.addView(accept, new LinearLayout.LayoutParams(dp(104), dp(44)));
+        return row;
     }
 
     private LinearLayout card() {

@@ -54,6 +54,7 @@ class AndroidMockSiteDriver:
             self.d.shell(f'am start -a android.intent.action.VIEW -d "{url}"')
             self.logger.log("open_android_browser", url)
         self.think(2.2, 4.2)
+        self._initial_orientation()
 
     def scroll_feed(self) -> None:
         count = random.randint(int(self.config["feed_scroll_min"]), int(self.config["feed_scroll_max"]))
@@ -111,6 +112,8 @@ class AndroidMockSiteDriver:
         repeated = 0
         for step in range(1, action_count + 1):
             choices = ["feed", "feed", "pause", "home"]
+            if self.target == "app":
+                choices.append("notifications")
             if remaining_contacts:
                 choices.extend(["search", "search"])
             action = random.choice(choices)
@@ -135,6 +138,8 @@ class AndroidMockSiteDriver:
                 self._go_home()
                 self.logger.log("home", self.target, "success", "random navigation")
                 self.think(0.8, 2.4)
+            elif action == "notifications":
+                self._check_notifications()
             else:
                 self.logger.log("idle_pause", self.target, "success", "random reading/thinking pause")
                 self.think(
@@ -143,6 +148,22 @@ class AndroidMockSiteDriver:
                 )
 
         self.logger.log("random_journey_end", self.target, "success", f"remaining_contacts={len(remaining_contacts)}")
+
+    def _initial_orientation(self) -> None:
+        """First-open orientation for the mock app/site: pause, scan, tiny scroll."""
+        self.logger.log("orientation_start", self.target, "success", "first_open_scan")
+        self.think(
+            float(self.config.get("orientation_min_seconds", 2.0)),
+            float(self.config.get("orientation_max_seconds", 5.0)),
+        )
+        if random.random() < 0.85:
+            self._human_swipe(direction="up")
+            self.logger.log("orientation_scroll", self.target, "success", "tiny_initial_scan")
+            self.think(0.8, 2.2)
+        if random.random() < 0.35:
+            self._human_swipe(direction="down")
+            self.logger.log("orientation_correction", self.target, "success", "small_reverse_scan")
+        self.logger.log("orientation_end", self.target, "success", "ready_for_next_action")
 
     def _visit_contact(self, contact: Contact) -> None:
         self._go_home()
@@ -426,6 +447,75 @@ class AndroidMockSiteDriver:
             except Exception:
                 pass
         return self._click_text("Connect")
+
+    def _check_notifications(self) -> None:
+        if self.target != "app":
+            return
+        self.logger.log("notifications_open", self.target, "started", "checking_mock_alerts")
+        try:
+            tab = self.d(resourceId=self.rid("notifications_tab"))
+            if tab.exists(timeout=1.0):
+                tab.click()
+            else:
+                self._click_text("Alerts")
+            self.think(1.2, 2.8)
+        except Exception as exc:
+            self.logger.log("notifications_open", self.target, "failed", repr(exc))
+            return
+
+        if self._open_connection_request_profile():
+            self._analyze_open_profile("connection_request_profile")
+            self._open_notifications_again()
+            self._accept_connection_request()
+        else:
+            self.logger.log("connection_request", self.target, "not_found", "no visible mock request")
+
+    def _open_notifications_again(self) -> None:
+        try:
+            tab = self.d(resourceId=self.rid("notifications_tab"))
+            if tab.exists(timeout=1.0):
+                tab.click()
+                self.think(0.8, 1.8)
+        except Exception:
+            pass
+
+    def _open_connection_request_profile(self) -> bool:
+        selectors = [
+            self.d(resourceId=self.rid("connection_request")),
+            self.d(descriptionContains="Connection request from"),
+            self.d(textContains="sent you a connection request"),
+        ]
+        for selector in selectors:
+            try:
+                if selector.exists(timeout=1.0):
+                    self.think(0.6, 1.6)
+                    selector.click()
+                    self.think(1.0, 2.2)
+                    if self.d(resourceId=self.rid("profile_page")).exists(timeout=1.2):
+                        self.logger.log("connection_request_profile", self.target, "opened", "review_before_accept")
+                        return True
+            except Exception:
+                pass
+        return False
+
+    def _accept_connection_request(self) -> bool:
+        selectors = [
+            self.d(resourceId=self.rid("accept_button"), text="Accept"),
+            self.d(text="Accept"),
+            self.d(descriptionContains="Accept request"),
+        ]
+        for selector in selectors:
+            try:
+                if selector.exists(timeout=1.0):
+                    self.think(0.7, 1.8)
+                    selector.click()
+                    self.logger.log("connection_request_accept", self.target, "clicked", "mock request accepted")
+                    self.think(0.7, 1.5)
+                    return True
+            except Exception:
+                pass
+        self.logger.log("connection_request_accept", self.target, "not_found", "accept button missing")
+        return False
 
     def _click_contact(self, name: str) -> bool:
         if self.target == "app":

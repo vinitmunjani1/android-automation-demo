@@ -14,6 +14,8 @@
   "profile_scroll_max": 5,
   "delay_min_seconds": 0.7,
   "delay_max_seconds": 2.2,
+  "orientation_min_seconds": 2.0,
+  "orientation_max_seconds": 5.0,
   "humanization": {
     "feed_read_min_seconds": 1.8,
     "feed_read_max_seconds": 5.2,

@@ -71,10 +71,15 @@ Goal: make `mock_android_app/` a richer professional-network mock for safe Andro
   - Home
   - Network
   - Post
-  - Notifications
+  - Notifications — implemented with mock connection requests
   - Jobs
 - Add lightweight mock screens for each tab.
 - Add automation actions that randomly visit tabs and return home.
+- Add notification automation:
+  - first-open orientation pause/scan — implemented
+  - open notifications — implemented
+  - review connection request profile — implemented
+  - accept mock request — implemented
 
 ## Phase 5 — Automation observability
 
