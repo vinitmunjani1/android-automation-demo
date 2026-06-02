@@ -83,7 +83,11 @@
     "connection_filters": [
       "1st",
       "2nd"
-    ]
+    ],
+    "collect_search_results_without_opening": true,
+    "result_collection_pages": 4,
+    "allow_coordinate_filter_fallbacks": false,
+    "allow_coordinate_result_fallbacks": false
   },
   "linkedin_review_assistant": {
     "visible_screen_scans": 1,

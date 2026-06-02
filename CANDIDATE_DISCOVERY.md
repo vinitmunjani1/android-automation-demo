@@ -59,12 +59,11 @@ mock_driver.py / android_driver.py / linkedin_review_driver.py
 
 1. The normal Android action runner uses `candidate_profile.json` search queries as its people/profile input.
 2. `contacts.csv` is disabled by default and only used if `allow_legacy_contacts_csv=true`.
-3. Profile-finder actions use the branch's existing search/find/open-profile flow.
-4. After the flow opens a profile, `android_driver.py` snapshots visible profile text.
-5. The profile is scored against `candidate_profile.json`.
-6. The scored candidate is appended to `output/candidate_discovery/latest.json`.
-7. Before opening results, the search flow tries to apply LinkedIn filters: `People` plus connection types `1st` and `2nd`.
-8. If the configured app package is real LinkedIn (`com.linkedin.android`), auto-connect is skipped and logged as `manual_required`; you click Connect manually.
+3. Profile-finder actions search each query and apply LinkedIn filters: `People` plus connection types `1st` and `2nd`.
+4. For real LinkedIn, visible result-list profiles are collected/scored directly instead of randomly tapping rows or opening one profile at a time.
+5. The ranked candidates are appended to `output/candidate_discovery/latest.json`, sorted by score.
+6. Coordinate filter/result fallbacks are disabled by default for real LinkedIn to avoid accidental random taps.
+7. Auto-connect is skipped; you click Connect manually if you choose.
 
 ### Real LinkedIn review-assistant workflow
 
@@ -162,7 +161,11 @@ If `--search-query` is omitted, discovery uses the first `search_queries` value 
   "manual_connect_required": false,
   "apply_people_search_filters": true,
   "apply_connection_filters": true,
-  "connection_filters": ["1st", "2nd"]
+  "connection_filters": ["1st", "2nd"],
+  "collect_search_results_without_opening": true,
+  "result_collection_pages": 4,
+  "allow_coordinate_filter_fallbacks": false,
+  "allow_coordinate_result_fallbacks": false
 },
 "candidate_scoring": {
   "title_keywords": ["founder", "ceo", "head", "vp", "manager", "director"],
