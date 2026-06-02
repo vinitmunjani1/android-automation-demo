@@ -165,7 +165,7 @@ public class MainActivity extends Activity {
         nav.addView(navItem("＋\nPost", false));
         TextView alerts = navItem("🔔\nAlerts", false);
         alerts.setId(R.id.notifications_tab);
-        alerts.setContentDescription("Notifications");
+        alerts.setContentDescription("Alerts Notifications");
         alerts.setOnClickListener(v -> showNotifications());
         nav.addView(alerts);
         nav.addView(navItem("💼\nJobs", false));
@@ -659,7 +659,8 @@ public class MainActivity extends Activity {
 
         LinearLayout header = card();
         addText(header, "Notifications", 22, true, TEXT);
-        addText(header, "Mock connection requests and network updates", 13, false, MUTED);
+        addText(header, "Mock connection requests", 16, true, BLUE);
+        addText(header, "Review request profiles before accepting them", 13, false, MUTED);
         notificationsPage.addView(header);
 
         for (int i = 0; i < Math.min(3, people.size()); i++) {

@@ -108,6 +108,9 @@ class AndroidMockSiteDriver:
         random.shuffle(remaining_contacts)
         self.logger.log("random_journey_start", self.target, "success", f"actions={action_count}")
 
+        if self.target == "app" and self.config.get("check_notifications_on_start", True):
+            self._check_notifications()
+
         last_action = ""
         repeated = 0
         for step in range(1, action_count + 1):
@@ -452,15 +455,8 @@ class AndroidMockSiteDriver:
         if self.target != "app":
             return
         self.logger.log("notifications_open", self.target, "started", "checking_mock_alerts")
-        try:
-            tab = self.d(resourceId=self.rid("notifications_tab"))
-            if tab.exists(timeout=1.0):
-                tab.click()
-            else:
-                self._click_text("Alerts")
-            self.think(1.2, 2.8)
-        except Exception as exc:
-            self.logger.log("notifications_open", self.target, "failed", repr(exc))
+        if not self._open_notifications_tab():
+            self.logger.log("notifications_open", self.target, "failed", "alerts tab not clickable")
             return
 
         if self._open_connection_request_profile():
@@ -471,13 +467,41 @@ class AndroidMockSiteDriver:
             self.logger.log("connection_request", self.target, "not_found", "no visible mock request")
 
     def _open_notifications_again(self) -> None:
+        self._open_notifications_tab()
+
+    def _open_notifications_tab(self) -> bool:
         try:
             tab = self.d(resourceId=self.rid("notifications_tab"))
             if tab.exists(timeout=1.0):
                 tab.click()
-                self.think(0.8, 1.8)
+                self.think(1.0, 2.2)
+                if self.d(resourceId=self.rid("notifications_page")).exists(timeout=1.0):
+                    return True
         except Exception:
             pass
+
+        for selector in [self.d(textContains="Alerts"), self.d(descriptionContains="Notifications")]:
+            try:
+                if selector.exists(timeout=0.8):
+                    selector.click()
+                    self.think(1.0, 2.2)
+                    if self.d(resourceId=self.rid("notifications_page")).exists(timeout=1.0):
+                        return True
+            except Exception:
+                pass
+
+        # Bottom nav fallback. Alerts is the 4th of 5 tabs, around 70% width.
+        try:
+            width, height = self.d.window_size()
+            for x_ratio in (0.70, 0.72, 0.68):
+                self.d.click(int(width * x_ratio), int(height * 0.955))
+                self.think(0.9, 1.8)
+                if self.d(resourceId=self.rid("notifications_page")).exists(timeout=1.0):
+                    self.logger.log("notifications_open", self.target, "success", "coordinate_fallback")
+                    return True
+        except Exception:
+            pass
+        return False
 
     def _open_connection_request_profile(self) -> bool:
         selectors = [
