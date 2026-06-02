@@ -218,8 +218,20 @@ class AndroidMockSiteDriver:
                 start_y = int(height * random.uniform(0.78, 0.90))
                 end_y = int(height * random.uniform(0.18, 0.34))
         else:
-            start_y = int(height * random.uniform(0.28, 0.42))
-            end_y = int(height * random.uniform(0.68, 0.84))
+            gesture_type = random.choices(
+                ["short", "medium", "long"],
+                weights=[0.42, 0.45, 0.13],
+                k=1,
+            )[0]
+            if gesture_type == "short":
+                start_y = int(height * random.uniform(0.34, 0.50))
+                end_y = int(height * random.uniform(0.52, 0.68))
+            elif gesture_type == "medium":
+                start_y = int(height * random.uniform(0.24, 0.42))
+                end_y = int(height * random.uniform(0.62, 0.82))
+            else:
+                start_y = int(height * random.uniform(0.16, 0.32))
+                end_y = int(height * random.uniform(0.72, 0.90))
 
         duration = random.uniform(
             float(self.human.get("swipe_duration_min_seconds", 0.22)),
@@ -232,8 +244,12 @@ class AndroidMockSiteDriver:
         roll = random.random()
         if roll < 0.22:
             time.sleep(random.uniform(0.12, 0.45))
-            nudge_start = int(height * random.uniform(0.55, 0.72))
-            nudge_end = int(nudge_start - height * random.uniform(0.06, 0.16))
+            if direction == "up":
+                nudge_start = int(height * random.uniform(0.55, 0.72))
+                nudge_end = int(nudge_start - height * random.uniform(0.06, 0.16))
+            else:
+                nudge_start = int(height * random.uniform(0.34, 0.50))
+                nudge_end = int(nudge_start + height * random.uniform(0.06, 0.16))
             self.d.swipe(
                 int(width * random.uniform(0.44, 0.56)),
                 nudge_start,
@@ -243,8 +259,12 @@ class AndroidMockSiteDriver:
             )
         elif roll < 0.34:
             time.sleep(random.uniform(0.18, 0.55))
-            correction_start = int(height * random.uniform(0.38, 0.52))
-            correction_end = int(correction_start + height * random.uniform(0.04, 0.11))
+            if direction == "up":
+                correction_start = int(height * random.uniform(0.38, 0.52))
+                correction_end = int(correction_start + height * random.uniform(0.04, 0.11))
+            else:
+                correction_start = int(height * random.uniform(0.54, 0.68))
+                correction_end = int(correction_start - height * random.uniform(0.04, 0.11))
             self.d.swipe(
                 int(width * random.uniform(0.44, 0.56)),
                 correction_start,
