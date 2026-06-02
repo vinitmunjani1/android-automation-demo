@@ -14,8 +14,8 @@
   "humanization": {
     "feed_read_min_seconds": 1.8,
     "feed_read_max_seconds": 5.2,
-    "swipe_duration_min_seconds": 0.45,
-    "swipe_duration_max_seconds": 1.15,
+    "swipe_duration_min_seconds": 0.22,
+    "swipe_duration_max_seconds": 1.45,
     "typing_delay_min_seconds": 0.09,
     "typing_delay_max_seconds": 0.32,
     "typo_probability": 0.0

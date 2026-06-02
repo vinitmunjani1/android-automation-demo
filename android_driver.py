@@ -195,21 +195,63 @@ class AndroidMockSiteDriver:
 
     def _human_swipe(self, direction: str = "up") -> None:
         width, height = self.d.window_size()
-        center_x = int(width * random.uniform(0.42, 0.58))
-        horizontal_drift = int(width * random.uniform(-0.035, 0.035))
+        center_x = int(width * random.uniform(0.40, 0.60))
+        horizontal_drift = int(width * random.uniform(-0.055, 0.055))
 
         if direction == "up":
-            start_y = int(height * random.uniform(0.72, 0.86))
-            end_y = int(height * random.uniform(0.24, 0.48))
+            # Humans rarely do identical full-screen swipes. Mix short nudges,
+            # medium scrolls, and occasional longer drags.
+            gesture_type = random.choices(
+                ["short", "medium", "long"],
+                weights=[0.38, 0.47, 0.15],
+                k=1,
+            )[0]
+            if gesture_type == "short":
+                start_y = int(height * random.uniform(0.62, 0.78))
+                end_y = int(height * random.uniform(0.42, 0.58))
+            elif gesture_type == "medium":
+                start_y = int(height * random.uniform(0.70, 0.86))
+                end_y = int(height * random.uniform(0.30, 0.48))
+            else:
+                start_y = int(height * random.uniform(0.78, 0.90))
+                end_y = int(height * random.uniform(0.18, 0.34))
         else:
             start_y = int(height * random.uniform(0.28, 0.42))
             end_y = int(height * random.uniform(0.68, 0.84))
 
         duration = random.uniform(
-            float(self.human.get("swipe_duration_min_seconds", 0.45)),
-            float(self.human.get("swipe_duration_max_seconds", 1.15)),
+            float(self.human.get("swipe_duration_min_seconds", 0.22)),
+            float(self.human.get("swipe_duration_max_seconds", 1.45)),
         )
         self.d.swipe(center_x, start_y, center_x + horizontal_drift, end_y, duration=duration)
+
+        # Small imperfect follow-up motions make the scroll less mechanically
+        # smooth: a tiny nudge, a settling pause, or a slight reverse correction.
+        roll = random.random()
+        if roll < 0.22:
+            time.sleep(random.uniform(0.12, 0.45))
+            nudge_start = int(height * random.uniform(0.55, 0.72))
+            nudge_end = int(nudge_start - height * random.uniform(0.06, 0.16))
+            self.d.swipe(
+                int(width * random.uniform(0.44, 0.56)),
+                nudge_start,
+                int(width * random.uniform(0.43, 0.57)),
+                nudge_end,
+                duration=random.uniform(0.12, 0.35),
+            )
+        elif roll < 0.34:
+            time.sleep(random.uniform(0.18, 0.55))
+            correction_start = int(height * random.uniform(0.38, 0.52))
+            correction_end = int(correction_start + height * random.uniform(0.04, 0.11))
+            self.d.swipe(
+                int(width * random.uniform(0.44, 0.56)),
+                correction_start,
+                int(width * random.uniform(0.43, 0.57)),
+                correction_end,
+                duration=random.uniform(0.10, 0.28),
+            )
+        else:
+            time.sleep(random.uniform(0.08, 0.32))
 
     def _click_like_button(self) -> bool:
         if self.target == "app":
