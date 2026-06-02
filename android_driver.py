@@ -314,8 +314,8 @@ class AndroidMockSiteDriver:
         if self.target != "app":
             return False
         selectors = [
-            self.d(resourceId=self.rid("feed_profile_link")),
             self.d(descriptionContains="Open feed profile"),
+            self.d(resourceId=self.rid("feed_profile_link")),
             self.d(resourceId=self.rid("post_card")),
         ]
         for selector in selectors:
@@ -327,6 +327,19 @@ class AndroidMockSiteDriver:
                     return self.d(resourceId=self.rid("profile_page")).exists(timeout=1.2)
             except Exception:
                 pass
+
+        # Fallback: tap likely author/header zones on visible feed cards. This is
+        # more robust on devices where duplicate resource IDs resolve to an
+        # off-screen node or where only part of the row is exposed to UIAutomator.
+        try:
+            width, height = self.d.window_size()
+            for y_ratio in (0.24, 0.34, 0.44, 0.54):
+                self.d.click(int(width * random.uniform(0.18, 0.42)), int(height * y_ratio))
+                self.think(0.6, 1.3)
+                if self.d(resourceId=self.rid("profile_page")).exists(timeout=0.8):
+                    return True
+        except Exception:
+            pass
         return False
 
     def _analyze_open_profile(self, label: str) -> None:
