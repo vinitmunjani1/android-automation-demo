@@ -81,6 +81,7 @@ class AndroidMockSiteDriver:
 
             if not self._click_contact(contact.name):
                 self.logger.log("open_profile", contact.name, "not_found")
+                self._leave_search_page(contact.name)
                 continue
             self.logger.log("open_profile", contact.name, "success", f"{contact.title} at {contact.company}")
             self._analyze_open_profile(contact.name)
@@ -278,6 +279,7 @@ class AndroidMockSiteDriver:
 
         if not self._click_contact(contact.name):
             self.logger.log("open_profile", contact.name, "not_found")
+            self._leave_search_page(contact.name)
             return
         self.logger.log("open_profile", contact.name, "success", f"{contact.title} at {contact.company}")
         self._analyze_open_profile(contact.name)
@@ -410,6 +412,31 @@ class AndroidMockSiteDriver:
             )
         except Exception:
             return False
+
+    def _is_search_page_open(self, timeout: float = 0.5) -> bool:
+        try:
+            return (
+                self.d(resourceId=self.rid("results_list")).exists(timeout=timeout)
+                or self.d(resourceId=self.rid("search_input")).exists(timeout=0.2)
+                or self.d(textContains="Show all results").exists(timeout=0.2)
+                or self.d(textContains="See all results").exists(timeout=0.2)
+            )
+        except Exception:
+            return False
+
+    def _leave_search_page(self, label: str) -> None:
+        """Recover when profile selection returns to/stalls on search."""
+        if self.target != "app":
+            return
+        try:
+            self.d.press("back")
+            self.think(0.4, 0.9)
+            if self._is_search_page_open(timeout=0.4):
+                self.d.press("back")
+                self.think(0.4, 0.9)
+            self.logger.log("search_recovery", label, "success", "left_search_after_profile_reject")
+        except Exception as exc:
+            self.logger.log("search_recovery", label, "failed", repr(exc))
 
     def _human_swipe(self, direction: str = "up") -> None:
         width, height = self.d.window_size()
@@ -1141,27 +1168,42 @@ class AndroidMockSiteDriver:
 
     def _click_contact(self, name: str) -> bool:
         if self.target == "app":
-            if self._click_visible_profile_result(name):
-                return True
+            for attempt in range(1, 3):
+                if self._click_visible_profile_result(name):
+                    return True
 
-            # LinkedIn-like search screens may first show a typeahead row plus
-            # "Show all results". Open full results, then retry profile rows.
-            for selector in [
-                self.d(text="Show all results"),
-                self.d(textContains="Show all results"),
-                self.d(descriptionContains="Show all results"),
-                self.d(textContains="See all results"),
-                self.d(descriptionContains="See all results"),
-            ]:
-                try:
-                    if selector.exists(timeout=0.9):
-                        selector.click()
-                        self.logger.log("search_show_all_results", name, "clicked", "opening_full_results")
+                # LinkedIn-like search screens may first show a typeahead row plus
+                # "Show all results". Open full results, then retry profile rows.
+                for selector in [
+                    self.d(text="Show all results"),
+                    self.d(textContains="Show all results"),
+                    self.d(descriptionContains="Show all results"),
+                    self.d(textContains="See all results"),
+                    self.d(descriptionContains="See all results"),
+                ]:
+                    try:
+                        if selector.exists(timeout=0.9):
+                            selector.click()
+                            self.logger.log("search_show_all_results", name, "clicked", f"attempt={attempt}")
+                            self.think(1.0, 2.0)
+                            if self._click_visible_profile_result(name):
+                                return True
+                    except Exception:
+                        pass
+
+                # If the app rejected navigation and returned to search, clear the
+                # transient state with Back, then retry once.
+                if attempt == 1 and self._is_search_page_open(timeout=0.5):
+                    self.logger.log("search_profile_rejected", name, "retrying", "returned_to_search_after_result_click")
+                    try:
+                        self.d.press("back")
+                        self.think(0.5, 1.0)
+                        self._focus_search_box()
+                        self._type_text_human(name)
                         self.think(1.0, 2.0)
-                        if self._click_visible_profile_result(name):
-                            return True
-                except Exception:
-                    pass
+                    except Exception:
+                        pass
+                    continue
 
             # Last-resort native app fallback: tap likely result rows, not the
             # profile banner/top-left avatar area.
@@ -1199,6 +1241,9 @@ class AndroidMockSiteDriver:
                     # profile content without MockIn's profile_page ID.
                     if self.d(textContains="Follow").exists(timeout=0.6) or self.d(textContains="Connect").exists(timeout=0.6):
                         return True
+                    if self._is_search_page_open(timeout=0.3):
+                        self.logger.log("search_result_click", name, "rejected", "still_on_search_page")
+                        continue
             except Exception:
                 pass
         return False
