@@ -56,11 +56,26 @@
   "android_target": "app",
   "mock_app_package": "com.mockin.app",
   "log_file": "logs/actions_linkedin_id_migration.csv",
+  "candidate_profile_file": "candidate_profile.json",
   "stuck_page_watchdog_enabled": true,
   "stuck_page_same_signature_threshold": 2,
   "mode": "mock",
   "action_transition": {
     "min_seconds": 0.05,
     "max_seconds": 0.2
+  },
+  "candidate_discovery": {
+    "default_search_query": "founder",
+    "output_dir": "output/candidate_discovery",
+    "max_candidates_per_query": 25,
+    "max_scrolls_per_query": 8,
+    "no_progress_scroll_limit": 2,
+    "candidate_dwell_min_seconds": 0.4,
+    "candidate_dwell_max_seconds": 1.4
+  },
+  "candidate_scoring": {
+    "title_keywords": ["founder", "ceo", "head", "vp", "manager", "director"],
+    "company_keywords": [],
+    "location_keywords": []
   }
 }

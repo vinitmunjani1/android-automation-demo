@@ -6,6 +6,7 @@ import shlex
 import time
 from typing import Iterable
 
+from candidate_discovery import Candidate, CandidateExtractor, CandidateScorer, human_dwell
 from logger import ActionLogger
 from mock_driver import Contact
 
@@ -33,6 +34,7 @@ class AndroidMockSiteDriver:
         self.target = config.get("android_target", "web")
         self.app_package = config.get("mock_app_package", "com.mockin.app")
         self.logger = logger
+        self.candidate_extractor = CandidateExtractor(CandidateScorer(config))
         self._last_page_signature = ""
         self._same_page_count = 0
         self._stuck_recovery_count = 0
@@ -106,6 +108,118 @@ class AndroidMockSiteDriver:
             else:
                 self.logger.log("connect", contact.name, "skipped", "random decision")
             self.action_transition_pause()
+
+    def discover_candidates_for_query(self, search_query: str, state: dict) -> Iterable[Candidate]:
+        """Discover visible mock candidates while reusing existing UI behavior.
+
+        This stays inside the controlled MockIn/mock-site harness. It mimics a
+        recruiter reviewing search results: search, pause on visible cards,
+        extract visible details, scroll progressively, and stop on no progress.
+        """
+        self._go_home()
+        self.think(0.7, 1.8)
+        if not self._focus_search_box():
+            self.logger.log("candidate_search", search_query, "failed", "search input missing")
+            return []
+
+        self._type_text_human(search_query)
+        self.logger.log("candidate_search", search_query, "success", "typed_humanized=true")
+        self.think(1.2, 2.8)
+
+        discovery_config = self.config.get("candidate_discovery", {})
+        max_candidates = int(discovery_config.get("max_candidates_per_query", 25))
+        max_scrolls = int(discovery_config.get("max_scrolls_per_query", 8))
+        no_progress_limit = int(discovery_config.get("no_progress_scroll_limit", 2))
+        seen_keys: set[str] = set(state.get("seen_candidate_keys", []))
+        no_progress = 0
+        yielded = 0
+
+        for page_index in range(1, max_scrolls + 1):
+            page_candidates = self._extract_visible_candidate_cards(search_query, page_index)
+            new_on_page = 0
+            for candidate in page_candidates:
+                key = candidate.identity_key()
+                if key in seen_keys:
+                    continue
+                seen_keys.add(key)
+                new_on_page += 1
+                yielded += 1
+                human_dwell(self.config)
+                self.logger.log("candidate_card_detected", candidate.name or "unknown", "success", f"score={candidate.score},page={page_index}")
+                yield candidate
+                if yielded >= max_candidates:
+                    state["seen_candidate_keys"] = sorted(seen_keys)
+                    state["last_source_page"] = page_index
+                    return
+
+            if new_on_page == 0:
+                no_progress += 1
+                self.logger.log("candidate_discovery_progress", search_query, "no_change", f"page={page_index},streak={no_progress}")
+            else:
+                no_progress = 0
+
+            if no_progress >= no_progress_limit:
+                break
+            before = self._page_signature() if self.target == "app" else self._visible_hierarchy()
+            self._scroll_content_down()
+            self.think(0.8, 2.0)
+            after = self._page_signature() if self.target == "app" else self._visible_hierarchy()
+            if before == after:
+                no_progress += 1
+
+        if yielded == 0:
+            self.logger.log("candidate_search_empty", search_query, "empty", "no_visible_candidates")
+        state["seen_candidate_keys"] = sorted(seen_keys)
+        state["last_source_page"] = page_index if 'page_index' in locals() else 0
+        return []
+
+    def _extract_visible_candidate_cards(self, search_query: str, page_index: int) -> list[Candidate]:
+        candidates: list[Candidate] = []
+        if self.target == "app":
+            selectors = [
+                self.d(resourceId=self.rid("person_result")),
+                self.d(resourceId=self.rid("network_person_card")),
+                self.d(descriptionContains="Person result"),
+                self.d(descriptionContains="Network suggestion"),
+            ]
+            sequence = 0
+            for selector in selectors:
+                try:
+                    if not selector.exists(timeout=0.2):
+                        continue
+                    sequence += 1
+                    info = selector.info or {}
+                    text = "\n".join(str(info.get(key) or "") for key in ("text", "contentDescription"))
+                    if not text.strip():
+                        text = self._visible_hierarchy()
+                    candidate = self.candidate_extractor.from_visible_text(text, search_query, f"mock_app_search_page_{page_index}", sequence)
+                    if candidate:
+                        candidate.additional_metadata.update({"driver_mode": "android", "target": self.target})
+                        candidates.append(candidate)
+                except Exception as exc:
+                    self.logger.log("candidate_extract_card", search_query, "failed", repr(exc))
+
+        if not candidates:
+            xml = self._visible_hierarchy()
+            # Fallback for UIAutomator variants: extract candidates from visible
+            # content descriptions generated by the mock app/site.
+            markers = []
+            for marker in ("Person result ", "Open profile ", "Network suggestion "):
+                start = 0
+                while True:
+                    idx = xml.find(marker, start)
+                    if idx == -1:
+                        break
+                    fragment = xml[idx: idx + 220]
+                    fragment = fragment.replace("&amp;", "&").replace("&quot;", '"')
+                    markers.append(fragment)
+                    start = idx + len(marker)
+            for sequence, fragment in enumerate(markers, start=1):
+                candidate = self.candidate_extractor.from_visible_text(fragment, search_query, f"visible_hierarchy_page_{page_index}", sequence)
+                if candidate:
+                    candidate.additional_metadata.update({"driver_mode": "android", "target": self.target, "extractor": "hierarchy_fallback"})
+                    candidates.append(candidate)
+        return candidates
 
     def run_random_journey(self, contacts: list[Contact]) -> None:
         """Run a randomized, bounded mock QA journey.

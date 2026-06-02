@@ -5,6 +5,7 @@ import time
 from dataclasses import dataclass
 from typing import Iterable
 
+from candidate_discovery import Candidate, CandidateExtractor, CandidateScorer, human_dwell, query_matches_person
 from logger import ActionLogger
 
 
@@ -21,6 +22,7 @@ class MockDriver:
     def __init__(self, config: dict, logger: ActionLogger) -> None:
         self.config = config
         self.logger = logger
+        self.candidate_extractor = CandidateExtractor(CandidateScorer(config))
 
     def delay(self, multiplier: float = 1.0) -> None:
         lo = float(self.config["delay_min_seconds"])
@@ -55,6 +57,34 @@ class MockDriver:
             else:
                 self.logger.log("connect", contact.name, "skipped", "random decision")
             self.delay()
+
+    def discover_candidates_for_query(self, search_query: str, state: dict) -> Iterable[Candidate]:
+        """Simulate progressive candidate discovery against the mock dataset."""
+        people = [
+            Contact("Amit Sharma", "Founder", "TechCorp"),
+            Contact("Priya Mehta", "HR Manager", "PeopleOps"),
+            Contact("Rahul Singh", "Software Engineer", "BuildAI"),
+            Contact("Neha Kapoor", "Product Manager", "ScaleLabs"),
+            Contact("Daniel Lee", "Data Scientist", "InsightWorks"),
+        ]
+        max_candidates = int(self.config.get("candidate_discovery", {}).get("max_candidates_per_query", 25))
+        discovered = 0
+        self.logger.log("candidate_search_person", search_query, "success", "typed_humanized=simulated")
+        for index, person in enumerate(people, start=1):
+            if discovered >= max_candidates:
+                break
+            if not query_matches_person(search_query, person.name, person.title, person.company):
+                continue
+            human_dwell(self.config)
+            source_page = f"mock_search_results_page_{1 + (index - 1) // 5}"
+            candidate = self.candidate_extractor.from_mock_person(person, search_query, source_page)
+            candidate.additional_metadata.update({"visible_card_index": index, "driver_mode": "mock"})
+            discovered += 1
+            state["last_visible_card_index"] = index
+            self.logger.log("candidate_card_detected", person.name, "success", f"score={candidate.score},source={source_page}")
+            yield candidate
+        if discovered == 0:
+            self.logger.log("candidate_search_empty", search_query, "empty", "no_mock_people_matched")
 
     def run_random_journey(self, contacts: list[Contact]) -> None:
         """Randomized mock QA journey with bounded action counts."""

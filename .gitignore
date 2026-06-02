@@ -9,3 +9,4 @@ logs/*.csv
 mock_android_app/.gradle/
 mock_android_app/**/build/
 mock_android_app/local.properties
+output/candidate_discovery/
