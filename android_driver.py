@@ -802,19 +802,22 @@ class AndroidMockSiteDriver:
         self.logger.log("profile_return_top_end", label, "success", "ready_to_connect")
 
     def _fast_profile_reverse_swipe(self) -> None:
+        """Move profile content back toward the top without tapping cover image.
+
+        Previous implementation started at 12-30% screen height, which overlaps
+        the profile cover/hero image. The natural-drag pre-movement could be
+        interpreted as a cover-image tap. Start in the lower content area and
+        use a direct swipe to avoid opening the banner/photo viewer.
+        """
         width, height = self.d.window_size()
-        start_x = int(width * random.uniform(0.42, 0.58))
-        start_y = int(height * random.uniform(0.12, 0.30))
-        end_x = start_x + int(width * random.uniform(-0.04, 0.04))
-        end_y = int(height * random.uniform(0.86, 0.97))
-        self._natural_drag(
-            start_x,
-            start_y,
-            end_x,
-            end_y,
-            random.uniform(0.10, 0.32),
-            small=True,
-        )
+        start_x = int(width * random.uniform(0.72, 0.88))
+        start_y = int(height * random.uniform(0.58, 0.70))
+        end_x = start_x + int(width * random.uniform(-0.02, 0.02))
+        end_y = int(height * random.uniform(0.82, 0.90))
+        try:
+            self.d.swipe(start_x, start_y, end_x, end_y, duration=random.uniform(0.18, 0.36))
+        except Exception:
+            self._natural_drag(start_x, start_y, end_x, end_y, random.uniform(0.18, 0.36), small=True)
 
     def _click_connect_button(self) -> bool:
         if self.target == "app":
