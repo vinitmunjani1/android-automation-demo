@@ -53,7 +53,7 @@
   },
   "max_contacts_per_run": 10,
   "mock_site_url": "http://127.0.0.1:8000",
-  "android_target": "web",
+  "android_target": "app",
   "mock_app_package": "com.mockin.app",
   "mode": "mock"
 }
