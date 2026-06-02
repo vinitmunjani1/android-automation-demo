@@ -153,7 +153,8 @@ class AndroidMockSiteDriver:
         self.think(0.2, 0.8)
         self._type_text_human(contact.name)
         self.logger.log("search_person", contact.name, "success", "typed_humanized=true")
-        self._hide_keyboard()
+        # Do not press Back here. On some Android devices the keyboard is not
+        # considered open after adb text input, so Back closes the mock app.
         self.think(1.2, 3.0)
 
         if not self._click_contact(contact.name):
@@ -300,19 +301,12 @@ class AndroidMockSiteDriver:
             # appears directly below the top search header.
             try:
                 width, height = self.d.window_size()
-                self.d.click(int(width * 0.42), int(height * 0.22))
+                self.d.click(int(width * 0.42), int(height * 0.28))
                 self.think(0.5, 1.0)
                 return self.d(resourceId=self.rid("profile_page")).exists(timeout=1.0)
             except Exception:
                 pass
         return self._click_text(name)
-
-    def _hide_keyboard(self) -> None:
-        try:
-            self.d.press("back")
-            time.sleep(random.uniform(0.25, 0.7))
-        except Exception:
-            pass
 
     def _go_home(self) -> None:
         if self.target == "app":
