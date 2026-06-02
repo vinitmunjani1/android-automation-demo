@@ -40,6 +40,23 @@ public class MainActivity extends Activity {
         }
     }
 
+    static class ProfileMockData {
+        String about, location, focus, recentPost, experience, education, videoTitle, imageTitle;
+        String[] skills;
+        ProfileMockData(String about, String location, String focus, String recentPost, String experience,
+                        String education, String videoTitle, String imageTitle, String[] skills) {
+            this.about = about;
+            this.location = location;
+            this.focus = focus;
+            this.recentPost = recentPost;
+            this.experience = experience;
+            this.education = education;
+            this.videoTitle = videoTitle;
+            this.imageTitle = imageTitle;
+            this.skills = skills;
+        }
+    }
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
@@ -457,6 +474,7 @@ public class MainActivity extends Activity {
     }
 
     private void showProfile(Person p) {
+        ProfileMockData data = profileData(p);
         feedList.setVisibility(View.GONE);
         resultsList.removeAllViews();
         profilePage.removeAllViews();
@@ -479,8 +497,8 @@ public class MainActivity extends Activity {
         info.setPadding(dp(16), dp(8), dp(16), 0);
         addText(info, p.name, 24, true, TEXT);
         addText(info, p.title + " at " + p.company, 16, false, Color.rgb(45, 45, 45));
-        addText(info, "India • 500+ mock connections", 13, false, MUTED);
-        addText(info, "Open to relevant professional conversations", 13, false, BLUE);
+        addText(info, data.location + " • 500+ mock connections", 13, false, MUTED);
+        addText(info, data.focus, 13, false, BLUE);
 
         LinearLayout buttons = new LinearLayout(this);
         buttons.setOrientation(LinearLayout.HORIZONTAL);
@@ -504,8 +522,110 @@ public class MainActivity extends Activity {
 
         LinearLayout about = card();
         addText(about, "About", 18, true, TEXT);
-        addText(about, "This is a controlled native mock profile for QA automation. It mirrors common professional-network UI patterns without using any real platform branding.", 14, false, TEXT);
+        addText(about, data.about, 14, false, TEXT);
         profilePage.addView(about);
+
+        LinearLayout activity = card();
+        addText(activity, "Activity", 18, true, TEXT);
+        addText(activity, "Recent professional update", 13, false, MUTED);
+        addText(activity, data.recentPost, 15, false, TEXT);
+        activity.addView(mockImageBlock(Math.abs(p.name.hashCode())));
+        profilePage.addView(activity);
+
+        LinearLayout video = card();
+        addText(video, "Featured", 18, true, TEXT);
+        addText(video, data.videoTitle, 15, true, TEXT);
+        video.addView(mockVideoBlock(Math.abs(p.company.hashCode())));
+        profilePage.addView(video);
+
+        LinearLayout gallery = card();
+        addText(gallery, "Project highlights", 18, true, TEXT);
+        addText(gallery, data.imageTitle, 15, true, TEXT);
+        gallery.addView(mockDocumentBlock(Math.abs((p.name + p.company).hashCode())));
+        profilePage.addView(gallery);
+
+        LinearLayout exp = card();
+        addText(exp, "Experience", 18, true, TEXT);
+        addText(exp, p.title, 16, true, TEXT);
+        addText(exp, p.company + " • Mock full-time", 14, false, MUTED);
+        addText(exp, data.experience, 14, false, TEXT);
+        profilePage.addView(exp);
+
+        LinearLayout education = card();
+        addText(education, "Education", 18, true, TEXT);
+        addText(education, data.education, 15, true, TEXT);
+        addText(education, "Professional learning and applied project work", 13, false, MUTED);
+        profilePage.addView(education);
+
+        LinearLayout skills = card();
+        addText(skills, "Skills", 18, true, TEXT);
+        for (String skill : data.skills) {
+            TextView pill = addText(skills, "• " + skill, 15, false, TEXT);
+            pill.setPadding(0, dp(6), 0, dp(6));
+        }
+        profilePage.addView(skills);
+    }
+
+    private ProfileMockData profileData(Person p) {
+        int index = Math.abs(p.name.hashCode()) % 5;
+        ProfileMockData[] data = {
+                new ProfileMockData(
+                        "Founder/operator focused on building practical automation systems, GTM workflows, and reliable internal tools for small teams.",
+                        "Bengaluru, India",
+                        "Open to product, automation, and founder conversations",
+                        "Shared a teardown of a lightweight CRM automation flow and the lessons from making it repeatable.",
+                        "Leads product strategy, customer discovery, workflow automation, and rapid mock-to-production validation.",
+                        "Indian Institute of Technology — Product and systems thinking",
+                        "2-minute walkthrough: From mock workflow to production-ready process",
+                        "Automation dashboard concept with pipeline, tasks, and outreach health",
+                        new String[]{"Product Strategy", "Automation", "Founder Sales", "Workflow Design"}
+                ),
+                new ProfileMockData(
+                        "People leader working on hiring systems, candidate experience, and structured operations for fast-moving teams.",
+                        "Mumbai, India",
+                        "Hiring systems, HR operations, and team design",
+                        "Posted notes on reducing interview drop-offs with clearer expectations and faster feedback loops.",
+                        "Builds hiring pipelines, onboarding playbooks, and manager enablement rituals for distributed teams.",
+                        "TISS Mumbai — Human resources and organizational behavior",
+                        "Mock video: Candidate pipeline review and hiring analytics",
+                        "Hiring dashboard with stage conversion and follow-up SLAs",
+                        new String[]{"Hiring Operations", "Candidate Experience", "Onboarding", "People Analytics"}
+                ),
+                new ProfileMockData(
+                        "Software engineer focused on backend systems, Android QA automation, and dependable developer tooling.",
+                        "Pune, India",
+                        "Backend engineering, Android testing, and infra tooling",
+                        "Published a short demo showing how stable resource IDs reduce flaky mobile automation tests.",
+                        "Ships APIs, test harnesses, observability utilities, and automation-friendly mock applications.",
+                        "BITS Pilani — Computer science and engineering",
+                        "Mock video: Debugging flaky Android UI automation",
+                        "Architecture diagram for testable mobile automation harnesses",
+                        new String[]{"Python", "Android UI Testing", "Backend APIs", "Observability"}
+                ),
+                new ProfileMockData(
+                        "Product manager translating messy customer workflows into simple product experiences and measurable launches.",
+                        "Delhi NCR, India",
+                        "Product discovery, UX systems, and launch execution",
+                        "Shared a product spec template that keeps design, engineering, and GTM teams aligned.",
+                        "Owns roadmap decisions, user interviews, product analytics, and cross-functional execution cadences.",
+                        "ISB — Product management and business strategy",
+                        "Mock video: Turning user research into roadmap priorities",
+                        "Product analytics snapshot with activation, retention, and usage funnels",
+                        new String[]{"Product Management", "User Research", "Analytics", "Roadmapping"}
+                ),
+                new ProfileMockData(
+                        "Data scientist building decision-support models, experimentation dashboards, and practical AI workflows.",
+                        "Hyderabad, India",
+                        "Data products, experimentation, and applied AI",
+                        "Posted a breakdown of how to evaluate automation quality with precision/recall and manual review queues.",
+                        "Designs metrics layers, ML prototypes, experiment dashboards, and decision-support systems.",
+                        "IIIT Hyderabad — Data science and machine learning",
+                        "Mock video: Reading experiment results without fooling yourself",
+                        "Experiment dashboard with cohorts, lift, and confidence indicators",
+                        new String[]{"Data Science", "Experimentation", "Applied AI", "Analytics Engineering"}
+                )
+        };
+        return data[index];
     }
 
     private void showHome() {
