@@ -275,6 +275,55 @@ class AndroidMockSiteDriver:
                 pass
         self._scroll_content_down()
 
+    def _reveal_bottom_nav(self) -> None:
+        """Reveal a hidden bottom navigation bar before tapping a tab."""
+        if self.target != "app":
+            return
+        try:
+            width, height = self.d.window_size()
+            # Short finger-down gesture from the middle of the content area.
+            # This reveals auto-hidden bottom nav without starting from the top
+            # edge, which avoids pull-to-refresh.
+            x = int(width * random.uniform(0.45, 0.55))
+            start_y = int(height * random.uniform(0.52, 0.62))
+            end_y = int(height * random.uniform(0.70, 0.78))
+            self.d.swipe(x, start_y, x + random.randint(-10, 10), end_y, duration=random.uniform(0.18, 0.35))
+            time.sleep(random.uniform(0.25, 0.55))
+        except Exception:
+            pass
+
+    def _is_notifications_page_open(self, timeout: float = 1.0) -> bool:
+        try:
+            return (
+                self.d(resourceId=self.rid("notifications_page")).exists(timeout=timeout)
+                or self.d(textContains="Mock connection requests").exists(timeout=0.3)
+                or self.d(textContains="Review request profiles").exists(timeout=0.3)
+                or self.d(resourceId=self.rid("connection_request")).exists(timeout=0.3)
+            )
+        except Exception:
+            return False
+
+    def _is_network_page_open(self, timeout: float = 1.0) -> bool:
+        try:
+            return (
+                self.d(resourceId=self.rid("network_page")).exists(timeout=timeout)
+                or self.d(textContains="My Network").exists(timeout=0.3)
+                or self.d(textContains="People you may know").exists(timeout=0.3)
+                or self.d(descriptionContains="Network suggestion").exists(timeout=0.3)
+            )
+        except Exception:
+            return False
+
+    def _is_messages_page_open(self, timeout: float = 1.0) -> bool:
+        try:
+            return (
+                self.d(resourceId=self.rid("messages_page")).exists(timeout=timeout)
+                or self.d(textContains="Messages").exists(timeout=0.3)
+                or self.d(descriptionContains="Conversation with").exists(timeout=0.3)
+            )
+        except Exception:
+            return False
+
     def _human_swipe(self, direction: str = "up") -> None:
         width, height = self.d.window_size()
 
@@ -685,12 +734,16 @@ class AndroidMockSiteDriver:
         self._open_notifications_tab()
 
     def _open_notifications_tab(self) -> bool:
+        if self._is_notifications_page_open(timeout=0.4):
+            return True
+        self._reveal_bottom_nav()
         try:
             tab = self.d(resourceId=self.rid("notifications_tab"))
             if tab.exists(timeout=1.0):
                 tab.click()
                 self.think(1.0, 2.2)
-                if self.d(resourceId=self.rid("notifications_page")).exists(timeout=1.0):
+                if self._is_notifications_page_open(timeout=1.2):
+                    self.logger.log("notifications_open", self.target, "success", "resource_id_tab")
                     return True
         except Exception:
             pass
@@ -700,7 +753,8 @@ class AndroidMockSiteDriver:
                 if selector.exists(timeout=0.8):
                     selector.click()
                     self.think(1.0, 2.2)
-                    if self.d(resourceId=self.rid("notifications_page")).exists(timeout=1.0):
+                    if self._is_notifications_page_open(timeout=1.2):
+                        self.logger.log("notifications_open", self.target, "success", "selector_tab")
                         return True
             except Exception:
                 pass
@@ -711,7 +765,7 @@ class AndroidMockSiteDriver:
             for x_ratio in (0.70, 0.72, 0.68):
                 self.d.click(int(width * x_ratio), int(height * 0.955))
                 self.think(0.9, 1.8)
-                if self.d(resourceId=self.rid("notifications_page")).exists(timeout=1.0):
+                if self._is_notifications_page_open(timeout=1.2):
                     self.logger.log("notifications_open", self.target, "success", "coordinate_fallback")
                     return True
         except Exception:
@@ -811,7 +865,7 @@ class AndroidMockSiteDriver:
             return
         self.think(1.4, 3.8)
         if random.random() < 0.45:
-            self._human_swipe(direction="up")
+            self._scroll_content_down()
             self.think(0.8, 2.2)
         if random.random() < 0.65:
             if self._click_connect_button():
@@ -827,20 +881,29 @@ class AndroidMockSiteDriver:
                     self.logger.log("network_connect", self.target, "clicked", "after_profile_review")
 
     def _open_network_tab(self) -> bool:
+        if self._is_network_page_open(timeout=0.4):
+            return True
+        self._reveal_bottom_nav()
         for selector in [self.d(resourceId=self.rid("network_tab")), self.d(textContains="Network"), self.d(descriptionContains="Network")]:
             try:
                 if selector.exists(timeout=0.8):
                     selector.click()
-                    self.think(0.9, 1.8)
-                    if self.d(resourceId=self.rid("network_page")).exists(timeout=1.0):
+                    self.think(1.0, 2.0)
+                    if self._is_network_page_open(timeout=1.3):
+                        self.logger.log("network_open", self.target, "success", "selector_tab")
                         return True
             except Exception:
                 pass
         try:
+            self._reveal_bottom_nav()
             width, height = self.d.window_size()
-            self.d.click(int(width * 0.30), int(height * 0.955))
-            self.think(0.9, 1.8)
-            return self.d(resourceId=self.rid("network_page")).exists(timeout=1.0)
+            for x_ratio in (0.30, 0.28, 0.32):
+                self.d.click(int(width * x_ratio), int(height * 0.955))
+                self.think(1.0, 2.0)
+                if self._is_network_page_open(timeout=1.3):
+                    self.logger.log("network_open", self.target, "success", "coordinate_fallback")
+                    return True
+            return False
         except Exception:
             return False
 
@@ -871,12 +934,15 @@ class AndroidMockSiteDriver:
         self._type_mock_message_and_send()
 
     def _open_messages_page(self) -> bool:
+        if self._is_messages_page_open(timeout=0.4):
+            return True
+        self._reveal_bottom_nav()
         for selector in [self.d(resourceId=self.rid("messages_button")), self.d(descriptionContains="Messaging")]:
             try:
                 if selector.exists(timeout=0.8):
                     selector.click()
                     self.think(1.0, 2.0)
-                    if self.d(resourceId=self.rid("messages_page")).exists(timeout=1.0):
+                    if self._is_messages_page_open(timeout=1.2):
                         return True
             except Exception:
                 pass
@@ -884,7 +950,7 @@ class AndroidMockSiteDriver:
             width, height = self.d.window_size()
             self.d.click(int(width * 0.93), int(height * 0.055))
             self.think(1.0, 2.0)
-            return self.d(resourceId=self.rid("messages_page")).exists(timeout=1.0)
+            return self._is_messages_page_open(timeout=1.2)
         except Exception:
             return False
 
