@@ -258,6 +258,23 @@ class AndroidMockSiteDriver:
                 pass
         self._human_swipe(direction="up")
 
+    def _scroll_profile_content_down(self) -> None:
+        """Scroll profile content without tapping the profile banner/top card."""
+        if self.target == "app":
+            try:
+                width, height = self.d.window_size()
+                # Use the right side of the screen and a mid/lower gesture so
+                # the path avoids avatar/banner/primary action zones.
+                x = int(width * random.uniform(0.78, 0.90))
+                start_y = int(height * random.uniform(0.80, 0.86))
+                end_y = int(height * random.uniform(0.50, 0.58))
+                self.d.swipe(x, start_y, x + random.randint(-10, 10), end_y, duration=random.uniform(0.35, 0.65))
+                time.sleep(random.uniform(0.30, 0.80))
+                return
+            except Exception:
+                pass
+        self._scroll_content_down()
+
     def _human_swipe(self, direction: str = "up") -> None:
         width, height = self.d.window_size()
 
@@ -536,8 +553,8 @@ class AndroidMockSiteDriver:
         self.logger.log("profile_analysis_start", label, "success", f"scrolls={passes}")
         for i in range(1, passes + 1):
             self.think(1.0, 3.2)
-            self._scroll_content_down()
-            self.logger.log("profile_scroll", f"{label}_{i}", "success", "content_down_safe_scroll")
+            self._scroll_profile_content_down()
+            self.logger.log("profile_scroll", f"{label}_{i}", "success", "profile_right_side_safe_scroll")
         if random.random() < 0.45:
             self.think(0.8, 2.0)
         self.logger.log("profile_analysis_end", label, "success", "humanized_profile_review")
@@ -589,9 +606,13 @@ class AndroidMockSiteDriver:
             selectors = [
                 self.d(resourceId=self.rid("connect_button")),
                 self.d(resourceId=self.rid("connect_button"), textContains="Connect"),
+                self.d(resourceId=self.rid("connect_button"), textContains="Follow"),
                 self.d(text="Connect"),
                 self.d(textContains="Connect"),
                 self.d(descriptionContains="Connect"),
+                self.d(text="Follow"),
+                self.d(textContains="Follow"),
+                self.d(descriptionContains="Follow"),
             ]
             for selector in selectors:
                 try:
@@ -607,10 +628,16 @@ class AndroidMockSiteDriver:
             try:
                 self._fast_profile_reverse_swipe()
                 self.think(0.4, 0.9)
-                button = self.d(resourceId=self.rid("connect_button"))
-                if button.exists(timeout=1.0):
-                    button.click()
-                    return True
+                for button in [
+                    self.d(resourceId=self.rid("connect_button")),
+                    self.d(textContains="Connect"),
+                    self.d(textContains="Follow"),
+                    self.d(descriptionContains="Connect"),
+                    self.d(descriptionContains="Follow"),
+                ]:
+                    if button.exists(timeout=1.0):
+                        button.click()
+                        return True
             except Exception:
                 pass
 
@@ -623,7 +650,7 @@ class AndroidMockSiteDriver:
                     return True
             except Exception:
                 pass
-        return self._click_text("Connect")
+        return self._click_text("Connect") or self._click_text("Follow")
 
     def _check_notifications(self) -> None:
         if self.target != "app":
@@ -900,34 +927,67 @@ class AndroidMockSiteDriver:
 
     def _click_contact(self, name: str) -> bool:
         if self.target == "app":
-            selectors = [
-                self.d(resourceId=self.rid("person_result"), text=name),
-                self.d(resourceId=self.rid("person_result"), textContains=name),
-                self.d(description=f"Open profile {name}"),
-                self.d(descriptionContains=name),
-                self.d(text=name),
-                self.d(textContains=name),
-            ]
-            for selector in selectors:
+            if self._click_visible_profile_result(name):
+                return True
+
+            # LinkedIn-like search screens may first show a typeahead row plus
+            # "Show all results". Open full results, then retry profile rows.
+            for selector in [
+                self.d(text="Show all results"),
+                self.d(textContains="Show all results"),
+                self.d(descriptionContains="Show all results"),
+                self.d(textContains="See all results"),
+                self.d(descriptionContains="See all results"),
+            ]:
                 try:
-                    if selector.exists(timeout=1.2):
-                        self.think(0.2, 0.7)
+                    if selector.exists(timeout=0.9):
                         selector.click()
-                        return True
+                        self.logger.log("search_show_all_results", name, "clicked", "opening_full_results")
+                        self.think(1.0, 2.0)
+                        if self._click_visible_profile_result(name):
+                            return True
                 except Exception:
                     pass
 
-            # Last-resort native app fallback: tap the first search-result row area.
-            # This is only for the controlled MockIn app where the first result card
-            # appears directly below the top search header.
+            # Last-resort native app fallback: tap likely result rows, not the
+            # profile banner/top-left avatar area.
             try:
                 width, height = self.d.window_size()
-                self.d.click(int(width * 0.42), int(height * 0.28))
-                self.think(0.5, 1.0)
-                return self.d(resourceId=self.rid("profile_page")).exists(timeout=1.0)
+                for y_ratio in (0.32, 0.40, 0.48):
+                    self.d.click(int(width * random.uniform(0.30, 0.70)), int(height * y_ratio))
+                    self.think(0.6, 1.2)
+                    if self.d(resourceId=self.rid("profile_page")).exists(timeout=1.0):
+                        return True
             except Exception:
                 pass
         return self._click_text(name)
+
+    def _click_visible_profile_result(self, name: str) -> bool:
+        selectors = [
+            self.d(resourceId=self.rid("person_result"), text=name),
+            self.d(resourceId=self.rid("person_result"), textContains=name),
+            self.d(resourceId=self.rid("person_result")),
+            self.d(description=f"Open profile {name}"),
+            self.d(descriptionContains=f"Open profile {name}"),
+            self.d(descriptionContains=name),
+            self.d(text=name),
+            self.d(textContains=name),
+        ]
+        for selector in selectors:
+            try:
+                if selector.exists(timeout=1.2):
+                    self.think(0.2, 0.7)
+                    selector.click()
+                    self.think(0.7, 1.4)
+                    if self.d(resourceId=self.rid("profile_page")).exists(timeout=1.0):
+                        return True
+                    # Some real/result screens navigate more slowly or expose
+                    # profile content without MockIn's profile_page ID.
+                    if self.d(textContains="Follow").exists(timeout=0.6) or self.d(textContains="Connect").exists(timeout=0.6):
+                        return True
+            except Exception:
+                pass
+        return False
 
     def _go_home(self) -> None:
         if self.target == "app":
