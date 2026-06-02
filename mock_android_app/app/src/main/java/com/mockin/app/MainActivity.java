@@ -178,7 +178,10 @@ public class MainActivity extends Activity {
         nav.setGravity(Gravity.CENTER);
         nav.setPadding(0, dp(6), 0, dp(4));
         nav.setBackgroundColor(Color.WHITE);
-        nav.addView(navItem("⌂\nHome", true));
+        TextView home = navItem("⌂\nHome", true);
+        home.setId(R.id.home_button);
+        home.setContentDescription("Home");
+        nav.addView(home);
         TextView network = navItem("👥\nNetwork", false);
         network.setId(R.id.network_tab);
         network.setContentDescription("Network");
