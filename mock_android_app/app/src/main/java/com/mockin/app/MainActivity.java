@@ -283,6 +283,8 @@ public class MainActivity extends Activity {
                 details.setOrientation(LinearLayout.VERTICAL);
                 details.setPadding(dp(12), 0, 0, 0);
                 TextView name = addText(details, p.name, 17, true, TEXT);
+                name.setId(R.id.person_result);
+                name.setContentDescription("Open profile " + p.name);
                 TextView meta = addText(details, p.title + " at " + p.company, 14, false, MUTED);
                 TextView sub = addText(details, "2nd • Professional network mock profile", 12, false, MUTED);
                 row.addView(details, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
