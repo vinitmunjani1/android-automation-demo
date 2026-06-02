@@ -455,9 +455,19 @@ class AndroidMockSiteDriver:
         if self.target != "app":
             return
         self.logger.log("notifications_open", self.target, "started", "checking_mock_alerts")
+        self.think(
+            float(self.config.get("pre_notifications_wait_min_seconds", 1.6)),
+            float(self.config.get("pre_notifications_wait_max_seconds", 4.2)),
+        )
         if not self._open_notifications_tab():
             self.logger.log("notifications_open", self.target, "failed", "alerts tab not clickable")
             return
+
+        self.logger.log("notifications_scan", self.target, "success", "processing_visible_notifications")
+        self.think(
+            float(self.config.get("notifications_scan_min_seconds", 2.2)),
+            float(self.config.get("notifications_scan_max_seconds", 6.0)),
+        )
 
         if self._open_connection_request_profile():
             self._analyze_open_profile("connection_request_profile")
@@ -504,6 +514,22 @@ class AndroidMockSiteDriver:
         return False
 
     def _open_connection_request_profile(self) -> bool:
+        # Prefer a random visible request card. This better covers the mock UI
+        # than always selecting the first request.
+        try:
+            width, height = self.d.window_size()
+            candidate_rows = [0.30, 0.42, 0.54]
+            random.shuffle(candidate_rows)
+            for y_ratio in candidate_rows:
+                self.think(0.4, 1.3)
+                self.d.click(int(width * random.uniform(0.18, 0.48)), int(height * y_ratio))
+                self.think(1.0, 2.2)
+                if self.d(resourceId=self.rid("profile_page")).exists(timeout=1.2):
+                    self.logger.log("connection_request_profile", self.target, "opened", f"random_row_y={y_ratio}")
+                    return True
+        except Exception:
+            pass
+
         selectors = [
             self.d(resourceId=self.rid("connection_request")),
             self.d(descriptionContains="Connection request from"),
@@ -667,6 +693,7 @@ class AndroidMockSiteDriver:
 
     def _type_text_human(self, text: str) -> None:
         typo_probability = float(self.human.get("typo_probability", 0.0))
+        rethink_probability = float(self.human.get("typing_rethink_probability", 0.0))
         for index, char in enumerate(text):
             token = "%s" if char == " " else char
 
@@ -682,6 +709,15 @@ class AndroidMockSiteDriver:
                 float(self.human.get("typing_delay_min_seconds", 0.09)),
                 float(self.human.get("typing_delay_max_seconds", 0.32)),
             ))
+
+            # Occasionally erase a correctly typed character and retype it, like
+            # a human second-guessing a keystroke. Mock QA only.
+            if char.isalpha() and index > 1 and random.random() < rethink_probability:
+                time.sleep(random.uniform(0.12, 0.45))
+                self.d.shell("input keyevent DEL")
+                time.sleep(random.uniform(0.18, 0.65))
+                self.d.shell(f"input text {shlex.quote(token)}")
+                time.sleep(random.uniform(0.12, 0.45))
 
             if char == " " or (index > 1 and random.random() < 0.12):
                 time.sleep(random.uniform(0.25, 0.9))
