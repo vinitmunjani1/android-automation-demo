@@ -20,6 +20,7 @@ Goal: make `mock_android_app/` a richer professional-network mock for safe Andro
   - follow/connect labels
 - Add interaction behavior:
   - Like/unlike toggle — implemented
+  - Repost toggle — implemented
 - Make feed author area reliably clickable:
   - stable `feed_profile_link` resource ID
   - clickable author header row
@@ -69,7 +70,7 @@ Goal: make `mock_android_app/` a richer professional-network mock for safe Andro
 
 - Expand bottom tabs:
   - Home
-  - Network
+  - Network — implemented with mock suggestions/connect
   - Post
   - Notifications — implemented with mock connection requests
   - Jobs
@@ -80,6 +81,7 @@ Goal: make `mock_android_app/` a richer professional-network mock for safe Andro
   - open notifications — implemented
   - review connection request profile — implemented
   - accept mock request — implemented
+  - messages inbox/conversation/reply — implemented
 
 ## Phase 5 — Automation observability
 

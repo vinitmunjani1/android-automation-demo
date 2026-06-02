@@ -30,6 +30,8 @@ public class MainActivity extends Activity {
     private LinearLayout resultsList;
     private LinearLayout profilePage;
     private LinearLayout notificationsPage;
+    private LinearLayout networkPage;
+    private LinearLayout messagesPage;
     private EditText searchInput;
 
     private final List<Person> people = new ArrayList<>();
@@ -103,10 +105,24 @@ public class MainActivity extends Activity {
         notificationsPage.setVisibility(View.GONE);
         notificationsPage.setContentDescription("Notifications page");
 
+        networkPage = new LinearLayout(this);
+        networkPage.setId(R.id.network_page);
+        networkPage.setOrientation(LinearLayout.VERTICAL);
+        networkPage.setVisibility(View.GONE);
+        networkPage.setContentDescription("Network page");
+
+        messagesPage = new LinearLayout(this);
+        messagesPage.setId(R.id.messages_page);
+        messagesPage.setOrientation(LinearLayout.VERTICAL);
+        messagesPage.setVisibility(View.GONE);
+        messagesPage.setContentDescription("Messages page");
+
         content.addView(feedList);
         content.addView(resultsList);
         content.addView(profilePage);
         content.addView(notificationsPage);
+        content.addView(networkPage);
+        content.addView(messagesPage);
         scroll.addView(content);
         root.addView(scroll, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1));
         root.addView(bottomNav());
@@ -149,7 +165,9 @@ public class MainActivity extends Activity {
         messages.setText("💬");
         messages.setTextSize(24);
         messages.setGravity(Gravity.CENTER);
+        messages.setId(R.id.messages_button);
         messages.setContentDescription("Messaging");
+        messages.setOnClickListener(v -> showMessages());
         header.addView(messages, new LinearLayout.LayoutParams(dp(42), dp(42)));
         return header;
     }
@@ -161,7 +179,11 @@ public class MainActivity extends Activity {
         nav.setPadding(0, dp(6), 0, dp(4));
         nav.setBackgroundColor(Color.WHITE);
         nav.addView(navItem("⌂\nHome", true));
-        nav.addView(navItem("👥\nNetwork", false));
+        TextView network = navItem("👥\nNetwork", false);
+        network.setId(R.id.network_tab);
+        network.setContentDescription("Network");
+        network.setOnClickListener(v -> showNetwork());
+        nav.addView(network);
         nav.addView(navItem("＋\nPost", false));
         TextView alerts = navItem("🔔\nAlerts", false);
         alerts.setId(R.id.notifications_tab);
@@ -299,7 +321,22 @@ public class MainActivity extends Activity {
             });
             actionRow.addView(like);
             actionRow.addView(feedAction("Comment"));
-            actionRow.addView(feedAction("Share"));
+            Button repost = feedAction("Repost");
+            repost.setId(R.id.repost_button);
+            repost.setContentDescription("Repost");
+            repost.setOnClickListener(v -> {
+                Button b = (Button) v;
+                if ("Reposted".contentEquals(b.getText())) {
+                    b.setText("Repost");
+                    b.setContentDescription("Repost");
+                    b.setTextColor(MUTED);
+                } else {
+                    b.setText("Reposted");
+                    b.setContentDescription("Reposted");
+                    b.setTextColor(BLUE);
+                }
+            });
+            actionRow.addView(repost);
             actionRow.addView(feedAction("Send"));
             card.addView(actionRow);
             feedList.addView(card);
@@ -490,6 +527,8 @@ public class MainActivity extends Activity {
         feedList.setVisibility(View.GONE);
         resultsList.removeAllViews();
         notificationsPage.setVisibility(View.GONE);
+        networkPage.setVisibility(View.GONE);
+        messagesPage.setVisibility(View.GONE);
         profilePage.removeAllViews();
         profilePage.setVisibility(View.VISIBLE);
 
@@ -526,6 +565,9 @@ public class MainActivity extends Activity {
         });
         buttons.addView(connect, new LinearLayout.LayoutParams(0, dp(46), 1));
         Button message = outlineButton("Message");
+        message.setId(R.id.message_button);
+        message.setContentDescription("Message " + p.name);
+        message.setOnClickListener(v -> showConversation(p));
         LinearLayout.LayoutParams msgLp = new LinearLayout.LayoutParams(0, dp(46), 1);
         msgLp.setMargins(dp(8), 0, 0, 0);
         buttons.addView(message, msgLp);
@@ -646,6 +688,8 @@ public class MainActivity extends Activity {
         resultsList.removeAllViews();
         profilePage.setVisibility(View.GONE);
         notificationsPage.setVisibility(View.GONE);
+        networkPage.setVisibility(View.GONE);
+        messagesPage.setVisibility(View.GONE);
         feedList.setVisibility(View.VISIBLE);
     }
 
@@ -654,6 +698,8 @@ public class MainActivity extends Activity {
         feedList.setVisibility(View.GONE);
         resultsList.removeAllViews();
         profilePage.setVisibility(View.GONE);
+        networkPage.setVisibility(View.GONE);
+        messagesPage.setVisibility(View.GONE);
         notificationsPage.removeAllViews();
         notificationsPage.setVisibility(View.VISIBLE);
 
@@ -702,6 +748,140 @@ public class MainActivity extends Activity {
         });
         row.addView(accept, new LinearLayout.LayoutParams(dp(104), dp(44)));
         return row;
+    }
+
+    private void showNetwork() {
+        searchInput.setText("");
+        feedList.setVisibility(View.GONE);
+        resultsList.removeAllViews();
+        profilePage.setVisibility(View.GONE);
+        notificationsPage.setVisibility(View.GONE);
+        messagesPage.setVisibility(View.GONE);
+        networkPage.removeAllViews();
+        networkPage.setVisibility(View.VISIBLE);
+
+        LinearLayout header = card();
+        addText(header, "My Network", 22, true, TEXT);
+        addText(header, "Mock people you may know", 13, false, MUTED);
+        networkPage.addView(header);
+
+        for (Person p : people) {
+            networkPage.addView(networkPersonCard(p));
+        }
+    }
+
+    private View networkPersonCard(Person p) {
+        LinearLayout row = card();
+        row.setId(R.id.network_person_card);
+        row.setContentDescription("Network suggestion " + p.name);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setClickable(true);
+        row.setOnClickListener(v -> showProfile(p));
+
+        row.addView(avatar(initials(p.name), dp(58)));
+        LinearLayout details = new LinearLayout(this);
+        details.setOrientation(LinearLayout.VERTICAL);
+        details.setPadding(dp(12), 0, dp(8), 0);
+        addText(details, p.name, 16, true, TEXT);
+        addText(details, p.title + " at " + p.company, 13, false, MUTED);
+        addText(details, "Suggested because of shared mock interests", 12, false, MUTED);
+        row.addView(details, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
+
+        Button connect = outlineButton("Connect");
+        connect.setId(R.id.connect_button);
+        connect.setContentDescription("Connect with " + p.name);
+        connect.setOnClickListener(v -> {
+            Button b = (Button) v;
+            if ("Connected".contentEquals(b.getText())) {
+                b.setText("Connect");
+                b.setContentDescription("Connect with " + p.name);
+                b.setEnabled(true);
+            } else {
+                b.setText("Connected");
+                b.setContentDescription("Connected with " + p.name);
+            }
+        });
+        row.addView(connect, new LinearLayout.LayoutParams(dp(118), dp(44)));
+        return row;
+    }
+
+    private void showMessages() {
+        searchInput.setText("");
+        feedList.setVisibility(View.GONE);
+        resultsList.removeAllViews();
+        profilePage.setVisibility(View.GONE);
+        notificationsPage.setVisibility(View.GONE);
+        networkPage.setVisibility(View.GONE);
+        messagesPage.removeAllViews();
+        messagesPage.setVisibility(View.VISIBLE);
+
+        LinearLayout header = card();
+        addText(header, "Messaging", 22, true, TEXT);
+        addText(header, "Mock inbox conversations", 13, false, MUTED);
+        messagesPage.addView(header);
+
+        for (int i = 0; i < Math.min(4, people.size()); i++) {
+            messagesPage.addView(conversationCard(people.get(i)));
+        }
+    }
+
+    private View conversationCard(Person p) {
+        LinearLayout row = card();
+        row.setId(R.id.conversation_item);
+        row.setContentDescription("Conversation with " + p.name);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setClickable(true);
+        row.setOnClickListener(v -> showConversation(p));
+        row.addView(avatar(initials(p.name), dp(52)));
+        LinearLayout details = new LinearLayout(this);
+        details.setOrientation(LinearLayout.VERTICAL);
+        details.setPadding(dp(12), 0, 0, 0);
+        addText(details, p.name, 16, true, TEXT);
+        addText(details, "Thanks for connecting — happy to chat about mock workflows.", 13, false, MUTED);
+        addText(details, "1h", 12, false, MUTED);
+        row.addView(details, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
+        return row;
+    }
+
+    private void showConversation(Person p) {
+        feedList.setVisibility(View.GONE);
+        resultsList.removeAllViews();
+        profilePage.setVisibility(View.GONE);
+        notificationsPage.setVisibility(View.GONE);
+        networkPage.setVisibility(View.GONE);
+        messagesPage.removeAllViews();
+        messagesPage.setVisibility(View.VISIBLE);
+
+        LinearLayout header = card();
+        addText(header, p.name, 22, true, TEXT);
+        addText(header, p.title + " at " + p.company, 13, false, MUTED);
+        messagesPage.addView(header);
+
+        LinearLayout thread = card();
+        addText(thread, p.name + ": Great to connect in this mock workflow.", 15, false, TEXT);
+        addText(thread, "You: Thanks — reviewing the automation test flow.", 15, false, TEXT);
+        messagesPage.addView(thread);
+
+        LinearLayout composer = card();
+        composer.setOrientation(LinearLayout.HORIZONTAL);
+        EditText input = new EditText(this);
+        input.setId(R.id.message_input);
+        input.setHint("Write a message");
+        input.setSingleLine(true);
+        input.setContentDescription("Message input");
+        composer.addView(input, new LinearLayout.LayoutParams(0, dp(48), 1));
+        Button send = filledButton("Send");
+        send.setId(R.id.send_message_button);
+        send.setContentDescription("Send message");
+        send.setOnClickListener(v -> {
+            input.setText("");
+            Button b = (Button) v;
+            b.setText("Sent");
+        });
+        composer.addView(send, new LinearLayout.LayoutParams(dp(96), dp(48)));
+        messagesPage.addView(composer);
     }
 
     private LinearLayout card() {

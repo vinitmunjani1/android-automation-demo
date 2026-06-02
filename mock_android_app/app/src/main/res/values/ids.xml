@@ -5,11 +5,22 @@
     <item name="feed_list" type="id" />
     <item name="post_card" type="id" />
     <item name="like_button" type="id" />
+    <item name="repost_button" type="id" />
+    <item name="repost_confirm_button" type="id" />
     <item name="feed_profile_link" type="id" />
     <item name="results_list" type="id" />
     <item name="person_result" type="id" />
     <item name="profile_page" type="id" />
     <item name="connect_button" type="id" />
+    <item name="network_tab" type="id" />
+    <item name="network_page" type="id" />
+    <item name="network_person_card" type="id" />
+    <item name="message_button" type="id" />
+    <item name="messages_button" type="id" />
+    <item name="messages_page" type="id" />
+    <item name="conversation_item" type="id" />
+    <item name="message_input" type="id" />
+    <item name="send_message_button" type="id" />
     <item name="notifications_tab" type="id" />
     <item name="notifications_page" type="id" />
     <item name="connection_request" type="id" />

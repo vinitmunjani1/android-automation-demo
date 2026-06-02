@@ -118,7 +118,7 @@ class AndroidMockSiteDriver:
         for step in range(1, action_count + 1):
             choices = ["feed", "feed", "pause", "home"]
             if self.target == "app":
-                choices.append("notifications")
+                choices.extend(["notifications", "network", "messages", "repost"])
             if remaining_contacts:
                 choices.extend(["search", "search"])
             action = random.choice(choices)
@@ -145,6 +145,12 @@ class AndroidMockSiteDriver:
                 self.think(0.8, 2.4)
             elif action == "notifications":
                 self._check_notifications()
+            elif action == "network":
+                self._browse_network_and_connect()
+            elif action == "messages":
+                self._open_messages_and_reply()
+            elif action == "repost":
+                self._try_repost_visible_post()
             else:
                 self.logger.log("idle_pause", self.target, "success", "random reading/thinking pause")
                 self.think(
@@ -684,6 +690,159 @@ class AndroidMockSiteDriver:
             except Exception:
                 pass
         self.logger.log("connection_request_accept", self.target, "not_found", "accept button missing")
+        return False
+
+    def _try_repost_visible_post(self) -> bool:
+        if self.target != "app":
+            return False
+        self.logger.log("repost", self.target, "started", "visible_post")
+        self.think(0.8, 2.0)
+        selectors = [
+            self.d(resourceId=self.rid("repost_button"), text="Repost"),
+            self.d(text="Repost"),
+            self.d(description="Repost"),
+        ]
+        for selector in selectors:
+            try:
+                if selector.exists(timeout=1.0):
+                    selector.click()
+                    self.logger.log("repost", self.target, "clicked", "mock repost toggled")
+                    self.think(0.6, 1.4)
+                    return True
+            except Exception:
+                pass
+        # Fallback: action row third button zone.
+        try:
+            width, height = self.d.window_size()
+            self.d.click(int(width * random.uniform(0.50, 0.62)), int(height * random.uniform(0.55, 0.78)))
+            self.logger.log("repost", self.target, "clicked", "coordinate_fallback")
+            self.think(0.5, 1.2)
+            return True
+        except Exception:
+            self.logger.log("repost", self.target, "failed", "not_found")
+            return False
+
+    def _browse_network_and_connect(self) -> None:
+        if self.target != "app":
+            return
+        self.logger.log("network_open", self.target, "started", "browse_suggestions")
+        if not self._open_network_tab():
+            self.logger.log("network_open", self.target, "failed", "network tab not clickable")
+            return
+        self.think(1.4, 3.8)
+        if random.random() < 0.45:
+            self._human_swipe(direction="up")
+            self.think(0.8, 2.2)
+        if random.random() < 0.65:
+            if self._click_connect_button():
+                self.logger.log("network_connect", self.target, "clicked", "suggestion connect")
+            else:
+                self.logger.log("network_connect", self.target, "not_found", "connect missing")
+        else:
+            if self._open_network_profile():
+                self.logger.log("network_profile", self.target, "opened", "review suggestion")
+                self._analyze_open_profile("network_profile")
+                self._return_profile_to_top("network_profile")
+                if self._click_connect_button():
+                    self.logger.log("network_connect", self.target, "clicked", "after_profile_review")
+
+    def _open_network_tab(self) -> bool:
+        for selector in [self.d(resourceId=self.rid("network_tab")), self.d(textContains="Network"), self.d(descriptionContains="Network")]:
+            try:
+                if selector.exists(timeout=0.8):
+                    selector.click()
+                    self.think(0.9, 1.8)
+                    if self.d(resourceId=self.rid("network_page")).exists(timeout=1.0):
+                        return True
+            except Exception:
+                pass
+        try:
+            width, height = self.d.window_size()
+            self.d.click(int(width * 0.30), int(height * 0.955))
+            self.think(0.9, 1.8)
+            return self.d(resourceId=self.rid("network_page")).exists(timeout=1.0)
+        except Exception:
+            return False
+
+    def _open_network_profile(self) -> bool:
+        selectors = [self.d(resourceId=self.rid("network_person_card")), self.d(descriptionContains="Network suggestion")]
+        for selector in selectors:
+            try:
+                if selector.exists(timeout=1.0):
+                    selector.click()
+                    self.think(1.0, 2.0)
+                    return self.d(resourceId=self.rid("profile_page")).exists(timeout=1.0)
+            except Exception:
+                pass
+        return False
+
+    def _open_messages_and_reply(self) -> None:
+        if self.target != "app":
+            return
+        self.logger.log("messages_open", self.target, "started", "browse_inbox")
+        if not self._open_messages_page():
+            self.logger.log("messages_open", self.target, "failed", "messages not clickable")
+            return
+        self.think(1.4, 3.5)
+        if not self._open_conversation():
+            self.logger.log("conversation_open", self.target, "not_found", "no conversation")
+            return
+        self.think(1.2, 3.2)
+        self._type_mock_message_and_send()
+
+    def _open_messages_page(self) -> bool:
+        for selector in [self.d(resourceId=self.rid("messages_button")), self.d(descriptionContains="Messaging")]:
+            try:
+                if selector.exists(timeout=0.8):
+                    selector.click()
+                    self.think(1.0, 2.0)
+                    if self.d(resourceId=self.rid("messages_page")).exists(timeout=1.0):
+                        return True
+            except Exception:
+                pass
+        try:
+            width, height = self.d.window_size()
+            self.d.click(int(width * 0.93), int(height * 0.055))
+            self.think(1.0, 2.0)
+            return self.d(resourceId=self.rid("messages_page")).exists(timeout=1.0)
+        except Exception:
+            return False
+
+    def _open_conversation(self) -> bool:
+        selectors = [self.d(resourceId=self.rid("conversation_item")), self.d(descriptionContains="Conversation with")]
+        for selector in selectors:
+            try:
+                if selector.exists(timeout=1.0):
+                    selector.click()
+                    self.think(1.0, 2.0)
+                    self.logger.log("conversation_open", self.target, "opened", "mock inbox")
+                    return True
+            except Exception:
+                pass
+        return False
+
+    def _type_mock_message_and_send(self) -> bool:
+        try:
+            input_box = self.d(resourceId=self.rid("message_input"))
+            if input_box.exists(timeout=1.0):
+                input_box.click()
+                self.think(0.4, 1.0)
+                text = random.choice([
+                    "Thanks for connecting",
+                    "Great to connect here",
+                    "Appreciate the message",
+                    "Happy to discuss this mock workflow",
+                ])
+                self._type_text_human(text)
+                self.think(0.6, 1.5)
+                send = self.d(resourceId=self.rid("send_message_button"))
+                if send.exists(timeout=1.0):
+                    send.click()
+                    self.logger.log("message_send", self.target, "clicked", "mock reply sent")
+                    return True
+        except Exception:
+            pass
+        self.logger.log("message_send", self.target, "failed", "input_or_send_missing")
         return False
 
     def _click_contact(self, name: str) -> bool:
