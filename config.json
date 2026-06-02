@@ -54,7 +54,7 @@
   "max_contacts_per_run": 10,
   "mock_site_url": "http://127.0.0.1:8000",
   "android_target": "app",
-  "mock_app_package": "com.mockin.app",
+  "mock_app_package": "com.linkedin.android",
   "linkedin_app_package": "com.linkedin.android",
   "log_file": "logs/actions_linkedin_id_migration.csv",
   "candidate_profile_file": "candidate_profile.json",
@@ -83,7 +83,14 @@
     "open_wait_seconds": 2.5
   },
   "candidate_scoring": {
-    "title_keywords": ["founder", "ceo", "head", "vp", "manager", "director"],
+    "title_keywords": [
+      "founder",
+      "ceo",
+      "head",
+      "vp",
+      "manager",
+      "director"
+    ],
     "company_keywords": [],
     "location_keywords": []
   }
