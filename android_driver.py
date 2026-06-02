@@ -16,7 +16,9 @@ class AndroidMockSiteDriver:
     DOM. For mobile Chrome/web pages, text selectors and coordinate fallbacks are
     more reliable than HTML-only attributes such as data-testid.
 
-    Do not repoint this at real social platforms.
+    The timing/gestures below are intentionally varied to make mock-device tests
+    resemble a human QA pass instead of a fixed robotic replay. Do not repoint
+    this at real social platforms.
     """
 
     def __init__(self, config: dict, logger: ActionLogger) -> None:
@@ -27,72 +29,115 @@ class AndroidMockSiteDriver:
         self.u2 = u2
         self.d = u2.connect()
         self.config = config
+        self.human = config.get("humanization", {})
         self.logger = logger
 
     def delay(self, multiplier: float = 1.0) -> None:
         lo = float(self.config["delay_min_seconds"])
         hi = float(self.config["delay_max_seconds"])
-        time.sleep(random.uniform(lo, hi) * multiplier)
+        jitter = random.uniform(0.85, 1.35)
+        time.sleep(random.uniform(lo, hi) * multiplier * jitter)
+
+    def think(self, min_seconds: float = 0.8, max_seconds: float = 2.4) -> None:
+        """A longer, variable pause between intentional actions."""
+        time.sleep(random.uniform(min_seconds, max_seconds))
 
     def open_app(self) -> None:
         url = self.config.get("mock_site_url", "http://127.0.0.1:8000")
         self.d.shell(f'am start -a android.intent.action.VIEW -d "{url}"')
         self.logger.log("open_android_browser", url)
-        self.delay(2)
+        self.think(2.2, 4.2)
 
     def scroll_feed(self) -> None:
         count = random.randint(int(self.config["feed_scroll_min"]), int(self.config["feed_scroll_max"]))
         self.logger.log("feed_session_start", "mock_feed", "success", f"scrolls={count}")
         for i in range(1, count + 1):
-            self.delay(random.uniform(0.8, 1.8))
+            # Humans pause unevenly depending on content length/interest.
+            self.think(
+                float(self.human.get("feed_read_min_seconds", 1.8)),
+                float(self.human.get("feed_read_max_seconds", 5.2)),
+            )
+
             if random.random() < float(self.config["like_probability"]):
+                # Small hesitation before engagement.
+                self.think(0.5, 1.7)
                 if self._click_like_button():
                     self.logger.log("like_post", f"visible_post_{i}")
+                    self.think(0.3, 1.0)
                 else:
                     self.logger.log("like_post", f"visible_post_{i}", "not_found")
-            self.d.swipe_ext("up", scale=random.uniform(0.45, 0.75))
-            self.logger.log("scroll_feed", f"post_window_{i}")
+
+            self._human_swipe(direction="up")
+            self.logger.log("scroll_feed", f"post_window_{i}", "success", "humanized=random_delay+random_distance")
+
+            # Occasional extra micro-pause after a longer swipe.
+            if random.random() < 0.25:
+                self.think(0.8, 2.0)
         self.logger.log("feed_session_end", "mock_feed")
 
     def search_and_visit_contacts(self, contacts: Iterable[Contact]) -> None:
         for contact in contacts:
             self._go_home()
+            self.think(0.7, 1.8)
             if not self._focus_search_box():
                 self.logger.log("search_person", contact.name, "failed", "search input missing")
                 continue
-            self._type_text(contact.name)
-            self.logger.log("search_person", contact.name)
-            self.delay(1)
+            self.think(0.2, 0.8)
+            self._type_text_human(contact.name)
+            self.logger.log("search_person", contact.name, "success", "typed_humanized=true")
+            self.think(1.2, 3.0)
 
             if not self._click_text(contact.name):
                 self.logger.log("open_profile", contact.name, "not_found")
                 continue
             self.logger.log("open_profile", contact.name, "success", f"{contact.title} at {contact.company}")
 
-            time.sleep(random.uniform(float(self.config["profile_view_min_seconds"]), float(self.config["profile_view_max_seconds"])))
+            # Profile viewing: min/max from config plus optional longer human pause.
+            min_view = float(self.config["profile_view_min_seconds"])
+            max_view = float(self.config["profile_view_max_seconds"])
+            view_time = random.uniform(min_view, max_view) + random.uniform(0.8, 2.8)
+            time.sleep(view_time)
+
             if random.random() < float(self.config["connect_probability"]):
+                self.think(0.5, 1.8)
                 if self._click_text("Connect"):
                     self.logger.log("connect", contact.name, "clicked", "mock button")
                 else:
                     self.logger.log("connect", contact.name, "not_found")
             else:
                 self.logger.log("connect", contact.name, "skipped", "random decision")
-            self.delay()
+            self.think(1.0, 2.8)
+
+    def _human_swipe(self, direction: str = "up") -> None:
+        width, height = self.d.window_size()
+        center_x = int(width * random.uniform(0.42, 0.58))
+        horizontal_drift = int(width * random.uniform(-0.035, 0.035))
+
+        if direction == "up":
+            start_y = int(height * random.uniform(0.72, 0.86))
+            end_y = int(height * random.uniform(0.24, 0.48))
+        else:
+            start_y = int(height * random.uniform(0.28, 0.42))
+            end_y = int(height * random.uniform(0.68, 0.84))
+
+        duration = random.uniform(
+            float(self.human.get("swipe_duration_min_seconds", 0.45)),
+            float(self.human.get("swipe_duration_max_seconds", 1.15)),
+        )
+        self.d.swipe(center_x, start_y, center_x + horizontal_drift, end_y, duration=duration)
 
     def _click_like_button(self) -> bool:
-        # Prefer accessibility text. Fall back to XPath text variants if needed.
         return self._click_text("Like") or self._click_xpath_text("Like")
 
     def _go_home(self) -> None:
         self._click_text("Home")
-        time.sleep(0.5)
+        time.sleep(random.uniform(0.5, 1.2))
         # Ensure the sticky header/search bar is visible even after feed scrolling.
-        for _ in range(2):
-            self.d.swipe_ext("down", scale=0.85)
-            time.sleep(0.2)
+        for _ in range(random.randint(1, 2)):
+            self._human_swipe(direction="down")
+            time.sleep(random.uniform(0.25, 0.75))
 
     def _focus_search_box(self) -> bool:
-        # Try common Android/browser accessibility representations first.
         candidates = [
             self.d(description="Search people"),
             self.d(text="Search people"),
@@ -100,26 +145,25 @@ class AndroidMockSiteDriver:
         ]
         for candidate in candidates:
             try:
-                if candidate.exists(timeout=0.5):
+                if candidate.exists(timeout=0.7):
                     candidate.click()
+                    self.think(0.2, 0.6)
                     self.d.clear_text()
                     return True
             except Exception:
                 pass
 
-        # Mobile Chrome often exposes little of the page DOM. The mock site's
-        # search field is in the sticky header, so tap the header search area.
         width, height = self.d.window_size()
-        for y_ratio in (0.16, 0.20, 0.24):
-            self.d.click(int(width * 0.48), int(height * y_ratio))
-            time.sleep(0.3)
-            try:
-                self.d.clear_text()
-            except Exception:
-                pass
-            # If keyboard appears or an EditText is focused, typing will work.
-            return True
-        return False
+        # Header search field fallback. Slight coordinate variance avoids fixed taps.
+        x = int(width * random.uniform(0.34, 0.62))
+        y = int(height * random.uniform(0.15, 0.23))
+        self.d.click(x, y)
+        time.sleep(random.uniform(0.35, 0.9))
+        try:
+            self.d.clear_text()
+        except Exception:
+            pass
+        return True
 
     def _click_text(self, text: str) -> bool:
         selectors = [
@@ -130,7 +174,8 @@ class AndroidMockSiteDriver:
         ]
         for selector in selectors:
             try:
-                if selector.exists(timeout=0.7):
+                if selector.exists(timeout=random.uniform(0.6, 1.2)):
+                    self.think(0.2, 0.7)
                     selector.click()
                     return True
             except Exception:
@@ -149,15 +194,37 @@ class AndroidMockSiteDriver:
             try:
                 item = self.d.xpath(xpath)
                 if item.exists:
+                    self.think(0.2, 0.7)
                     item.click()
                     return True
             except Exception:
                 pass
         return False
 
-    def _type_text(self, text: str) -> None:
-        # ADB input text is more reliable for browser fields than per-character
-        # accessibility typing. Spaces must be escaped as %s.
-        safe = text.replace(" ", "%s")
-        self.d.shell(f"input text {shlex.quote(safe)}")
-        time.sleep(random.uniform(0.2, 0.5))
+    def _type_text_human(self, text: str) -> None:
+        # Type in short chunks with varied pauses. This is slower and more natural
+        # than one instant `adb input text Amit%sSharma` call.
+        typo_probability = float(self.human.get("typo_probability", 0.0))
+        for index, char in enumerate(text):
+            if char == " ":
+                token = "%s"
+            else:
+                token = char
+
+            # Optional disabled-by-default typo simulation for mock QA only.
+            if typo_probability > 0 and char.isalpha() and random.random() < typo_probability:
+                wrong = random.choice("abcdefghijklmnopqrstuvwxyz")
+                self.d.shell(f"input text {shlex.quote(wrong)}")
+                time.sleep(random.uniform(0.12, 0.35))
+                self.d.shell("input keyevent DEL")
+                time.sleep(random.uniform(0.15, 0.45))
+
+            self.d.shell(f"input text {shlex.quote(token)}")
+            time.sleep(random.uniform(
+                float(self.human.get("typing_delay_min_seconds", 0.09)),
+                float(self.human.get("typing_delay_max_seconds", 0.32)),
+            ))
+
+            # Occasional slightly longer pause after word boundaries / mid-name.
+            if char == " " or (index > 1 and random.random() < 0.12):
+                time.sleep(random.uniform(0.25, 0.9))

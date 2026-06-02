@@ -7,10 +7,19 @@
   "feed_scroll_max": 12,
   "like_probability": 0.35,
   "connect_probability": 0.5,
-  "profile_view_min_seconds": 2,
-  "profile_view_max_seconds": 7,
-  "delay_min_seconds": 0.4,
-  "delay_max_seconds": 1.4,
+  "profile_view_min_seconds": 3,
+  "profile_view_max_seconds": 9,
+  "delay_min_seconds": 0.7,
+  "delay_max_seconds": 2.2,
+  "humanization": {
+    "feed_read_min_seconds": 1.8,
+    "feed_read_max_seconds": 5.2,
+    "swipe_duration_min_seconds": 0.45,
+    "swipe_duration_max_seconds": 1.15,
+    "typing_delay_min_seconds": 0.09,
+    "typing_delay_max_seconds": 0.32,
+    "typo_probability": 0.0
+  },
   "max_contacts_per_run": 10,
   "mock_site_url": "http://127.0.0.1:8000",
   "mode": "mock"
