@@ -12,7 +12,8 @@ It demonstrates scheduling, feed scrolling, randomized interactions, CSV-driven 
 - `mock_server.py` — local HTTP server for mock site
 - `mock_driver.py` — no-device simulation driver for fast validation
 - `android_driver.py` — optional uiautomator2 driver for mock site/app only
-- `candidate_discovery.py` — mock candidate discovery, scoring, dedupe, and JSON persistence
+- `linkedin_review_driver.py` — real LinkedIn visible-screen review assistant for scoring candidates without auto-connect
+- `candidate_discovery.py` — candidate discovery, scoring, dedupe, and JSON persistence
 - `candidate_profile.json` — editable ICP/search/scoring rules
 - `CANDIDATE_DISCOVERY.md` — discovery architecture, schema, config, and edge-case handling
 - `logs/actions.csv` — action log generated at runtime
@@ -33,6 +34,14 @@ python3 main.py --now --mode mock --discover-candidates --search-query founder
 ```
 
 Edit `candidate_profile.json` whenever you want to change search queries, keywords, weights, and score thresholds.
+
+To score real LinkedIn profiles/results, manually open the LinkedIn Android app to a search result or profile screen, then run:
+
+```bash
+python3 main.py --now --mode linkedin-review --discover-candidates --search-query "founder AI India"
+```
+
+This captures and scores visible real LinkedIn text, saves JSON output, and leaves connect decisions/clicks to you.
 
 See [`CANDIDATE_DISCOVERY.md`](CANDIDATE_DISCOVERY.md) for architecture, schema, editable scoring profile, configuration, resume behavior, and edge-case handling.
 

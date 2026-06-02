@@ -76,6 +76,9 @@ def build_driver(mode: str, config: dict, logger: ActionLogger):
     if mode == "android":
         from android_driver import AndroidMockSiteDriver
         return AndroidMockSiteDriver(config, logger)
+    if mode == "linkedin-review":
+        from linkedin_review_driver import LinkedInReviewAssistantDriver
+        return LinkedInReviewAssistantDriver(config, logger)
     raise ValueError(f"Unsupported mode: {mode}")
 
 
@@ -107,10 +110,10 @@ def run_once(mode: str, config: dict, contacts: list[Contact], logger: ActionLog
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Safe mock Android automation proof-of-concept")
+    parser = argparse.ArgumentParser(description="Android automation proof-of-concept with mock mode and LinkedIn review-assistant scoring")
     parser.add_argument("--config", default=str(ROOT / "config.json"))
     parser.add_argument("--contacts", default=str(ROOT / "contacts.csv"))
-    parser.add_argument("--mode", choices=["mock", "android"], default=None)
+    parser.add_argument("--mode", choices=["mock", "android", "linkedin-review"], default=None)
     parser.add_argument("--now", action="store_true", help="Run immediately instead of waiting for random time window")
     parser.add_argument("--dry-run", action="store_true", help="Validate config/contacts only")
     parser.add_argument("--discover-candidates", action="store_true", help="Run candidate discovery instead of the default contact/engagement journey")

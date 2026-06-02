@@ -1,6 +1,6 @@
 # Candidate Discovery
 
-Candidate discovery is integrated as a modular extension of the existing MockIn automation framework. It remains scoped to the controlled mock LinkedIn-style site/app that ships with this repository.
+Candidate discovery is integrated as a modular extension of the existing automation framework. It supports the controlled MockIn harness for safe validation plus a real LinkedIn Android **review assistant** mode that scores visible real profiles/results without auto-connecting.
 
 ## Repository analysis
 
@@ -20,7 +20,7 @@ candidate_discovery.py
   ├─ CandidatePersistenceService           atomic JSON + latest pointer
   └─ DiscoveryStateManager                 resume-aware run state
 
-mock_driver.py / android_driver.py
+mock_driver.py / android_driver.py / linkedin_review_driver.py
   └─ discover_candidates_for_query(...)    driver-specific UI/data collection
 ```
 
@@ -28,7 +28,8 @@ mock_driver.py / android_driver.py
 
 - `main.py` is the CLI entrypoint and driver factory.
 - `mock_driver.py` provides fast, no-device validation.
-- `android_driver.py` wraps uiautomator2 and already owns navigation, selectors, page signatures, retry/fallback behavior, and human-like gestures.
+- `android_driver.py` wraps uiautomator2 for the MockIn app/site and already owns navigation, selectors, page signatures, retry/fallback behavior, and human-like gestures.
+- `linkedin_review_driver.py` wraps uiautomator2 for the real LinkedIn Android app, reads visible text only, scores candidates, and requires manual connect decisions/clicks.
 - `logger.py` appends action logs to CSV; candidate discovery adds structured JSON output instead of overloading the action log.
 - Human-like behavior already exists through `think()`, `delay()`, `action_transition_pause()`, `_human_swipe()`, `_scroll_content_down()`, `_type_text_human()`, and page/stuck recovery helpers.
 
@@ -36,10 +37,13 @@ mock_driver.py / android_driver.py
 
 - `main.py`: added `--discover-candidates`, `--search-query`, and `--no-resume`.
 - `mock_driver.py`: simulates candidate search against the same mock people dataset.
-- `android_driver.py`: searches through existing UI helpers, pauses on visible result cards, extracts visible data, scrolls progressively, and stops after configurable no-progress thresholds.
-- `config.json`: added `candidate_discovery` and `candidate_scoring` sections.
+- `android_driver.py`: searches through existing MockIn UI helpers, pauses on visible result cards, extracts visible data, scrolls progressively, and stops after configurable no-progress thresholds.
+- `linkedin_review_driver.py`: captures real LinkedIn visible screen text from a manually opened search/profile screen and scores it without auto-connect.
+- `config.json`: added `candidate_discovery`, `linkedin_review_assistant`, and `candidate_scoring` sections.
 
 ## Discovery workflow
+
+### MockIn validation workflow
 
 1. Open MockIn/mock site through the selected driver.
 2. Focus the existing search box.
@@ -50,6 +54,16 @@ mock_driver.py / android_driver.py
 7. Scroll naturally using existing scroll helpers.
 8. Stop on candidate limit, no-progress threshold, empty results, or max scrolls.
 9. Persist JSON atomically after the discovery pass.
+
+### Real LinkedIn review-assistant workflow
+
+1. Open/search LinkedIn manually on the connected Android device.
+2. Navigate to a real profile or search-results screen.
+3. Run `--mode linkedin-review --discover-candidates`.
+4. The driver snapshots visible Android text only.
+5. Candidate-like text is scored against `candidate_profile.json`.
+6. Results are saved to JSON with `manual_connect_required=true`.
+7. You decide whether to click Connect manually.
 
 ## JSON schema
 
@@ -165,8 +179,8 @@ If `--search-query` is omitted, discovery uses the first `search_queries` value 
 | Scroll failure/no movement | Stuck discovery | Existing page signature checks + no-progress stop. |
 | Unexpected navigation | Wrong page | Existing page classifier/recovery remains available in android driver. |
 | Loading delays/network latency | Flaky reads | Existing randomized `think()` delays before extraction. |
-| Logged-out/session prompts | Not expected in mock harness | Missing search/results are logged as failure instead of crashing. |
-| UI changes | Selectors break | Resource-id selectors plus hierarchy fallback. |
+| Logged-out/session prompts | Real LinkedIn cannot be read | Missing visible candidate text is logged as empty/failure instead of crashing. |
+| UI changes | Selectors break | Visible TextView capture plus hierarchy fallback. |
 
 ## Usage
 
@@ -180,6 +194,14 @@ For Android MockIn app testing:
 python3 main.py --now --mode android --discover-candidates --search-query founder
 ```
 
+For real LinkedIn review/scoring:
+
+```bash
+python3 main.py --now --mode linkedin-review --discover-candidates --search-query "founder AI India"
+```
+
+Open LinkedIn to a real search-results/profile screen first. The assistant scores what is visible and writes JSON; you manually click Connect if you want.
+
 ## Safety scope
 
-This feature is intentionally implemented for the included mock environment only. Do not repoint this repository at real LinkedIn or any real social platform.
+MockIn mode may automate the included mock app/site. Real LinkedIn mode is review-assistant only: it scores visible candidates and does not auto-connect or run an engagement loop.

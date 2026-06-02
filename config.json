@@ -55,6 +55,7 @@
   "mock_site_url": "http://127.0.0.1:8000",
   "android_target": "app",
   "mock_app_package": "com.mockin.app",
+  "linkedin_app_package": "com.linkedin.android",
   "log_file": "logs/actions_linkedin_id_migration.csv",
   "candidate_profile_file": "candidate_profile.json",
   "stuck_page_watchdog_enabled": true,
@@ -72,6 +73,12 @@
     "no_progress_scroll_limit": 2,
     "candidate_dwell_min_seconds": 0.4,
     "candidate_dwell_max_seconds": 1.4
+  },
+  "linkedin_review_assistant": {
+    "visible_screen_scans": 1,
+    "pause_between_scans_seconds": 1.5,
+    "max_candidates_per_scan": 20,
+    "open_wait_seconds": 2.5
   },
   "candidate_scoring": {
     "title_keywords": ["founder", "ceo", "head", "vp", "manager", "director"],
