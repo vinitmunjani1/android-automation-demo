@@ -72,7 +72,9 @@
     "max_scrolls_per_query": 8,
     "no_progress_scroll_limit": 2,
     "candidate_dwell_min_seconds": 0.4,
-    "candidate_dwell_max_seconds": 1.4
+    "candidate_dwell_max_seconds": 1.4,
+    "score_existing_profile_flow": true,
+    "manual_connect_required": false
   },
   "linkedin_review_assistant": {
     "visible_screen_scans": 1,

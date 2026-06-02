@@ -37,7 +37,7 @@ mock_driver.py / android_driver.py / linkedin_review_driver.py
 
 - `main.py`: added `--discover-candidates`, `--search-query`, and `--no-resume`.
 - `mock_driver.py`: simulates candidate search against the same mock people dataset.
-- `android_driver.py`: searches through existing MockIn UI helpers, pauses on visible result cards, extracts visible data, scrolls progressively, and stops after configurable no-progress thresholds.
+- `android_driver.py`: preserves the existing search/find/open-profile flow and adds a scoring hook after a profile is opened. It also supports standalone MockIn discovery through existing UI helpers.
 - `linkedin_review_driver.py`: captures real LinkedIn visible screen text from a manually opened search/profile screen and scores it without auto-connect.
 - `config.json`: added `candidate_discovery`, `linkedin_review_assistant`, and `candidate_scoring` sections.
 
@@ -54,6 +54,14 @@ mock_driver.py / android_driver.py / linkedin_review_driver.py
 7. Scroll naturally using existing scroll helpers.
 8. Stop on candidate limit, no-progress threshold, empty results, or max scrolls.
 9. Persist JSON atomically after the discovery pass.
+
+### Existing profile-finder scoring workflow
+
+1. Keep using the branch's existing Android search/find/open-profile flow.
+2. After the flow opens a profile, `android_driver.py` snapshots visible profile text.
+3. The profile is scored against `candidate_profile.json`.
+4. The scored candidate is appended to `output/candidate_discovery/latest.json`.
+5. If the configured app package is real LinkedIn (`com.linkedin.android`), auto-connect is skipped and logged as `manual_required`; you click Connect manually.
 
 ### Real LinkedIn review-assistant workflow
 
@@ -146,7 +154,9 @@ If `--search-query` is omitted, discovery uses the first `search_queries` value 
   "max_scrolls_per_query": 8,
   "no_progress_scroll_limit": 2,
   "candidate_dwell_min_seconds": 0.4,
-  "candidate_dwell_max_seconds": 1.4
+  "candidate_dwell_max_seconds": 1.4,
+  "score_existing_profile_flow": true,
+  "manual_connect_required": false
 },
 "candidate_scoring": {
   "title_keywords": ["founder", "ceo", "head", "vp", "manager", "director"],

@@ -35,7 +35,9 @@ python3 main.py --now --mode mock --discover-candidates --search-query founder
 
 Edit `candidate_profile.json` whenever you want to change search queries, keywords, weights, and score thresholds.
 
-To score real LinkedIn profiles/results, manually open the LinkedIn Android app to a search result or profile screen, then run:
+The existing Android search/find/open-profile flow now also scores each opened profile and saves it to JSON. If `mock_app_package`/the active app package is `com.linkedin.android`, it will score the found profile but log Connect as manual-required instead of clicking it.
+
+To score real LinkedIn profiles/results without running the existing finder, manually open the LinkedIn Android app to a search result or profile screen, then run:
 
 ```bash
 python3 main.py --now --mode linkedin-review --discover-candidates --search-query "founder AI India"

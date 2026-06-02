@@ -2,11 +2,22 @@ from __future__ import annotations
 
 import hashlib
 import random
+import re
 import shlex
 import time
+from pathlib import Path
 from typing import Iterable
 
-from candidate_discovery import Candidate, CandidateExtractor, CandidateScorer, human_dwell
+from candidate_discovery import (
+    Candidate,
+    CandidateDeduplicator,
+    CandidateExtractor,
+    CandidatePersistenceService,
+    CandidateScorer,
+    DiscoveryRun,
+    human_dwell,
+    utc_now,
+)
 from logger import ActionLogger
 from mock_driver import Contact
 
@@ -35,6 +46,10 @@ class AndroidMockSiteDriver:
         self.app_package = config.get("mock_app_package", "com.mockin.app")
         self.logger = logger
         self.candidate_extractor = CandidateExtractor(CandidateScorer(config))
+        self._candidate_deduplicator = CandidateDeduplicator()
+        self._profile_flow_run: DiscoveryRun | None = None
+        self._profile_flow_run_path: Path | None = None
+        self._candidate_persistence: CandidatePersistenceService | None = None
         self._last_page_signature = ""
         self._same_page_count = 0
         self._stuck_recovery_count = 0
@@ -93,16 +108,22 @@ class AndroidMockSiteDriver:
                 continue
             self.logger.log("open_profile", contact.name, "success", f"{contact.title} at {contact.company}")
             self._analyze_open_profile(contact.name)
+            self._score_open_profile_candidate(contact.name)
             self._return_profile_to_top(contact.name)
 
             min_view = float(self.config["profile_view_min_seconds"])
             max_view = float(self.config["profile_view_max_seconds"])
             time.sleep(random.uniform(min_view, max_view) + random.uniform(0.8, 2.8))
 
+            if self._manual_connect_required_when_scoring():
+                self.logger.log("connect", contact.name, "manual_required", "candidate_scoring_enabled")
+                self.action_transition_pause()
+                continue
+
             if random.random() < float(self.config["connect_probability"]):
                 self.think(0.5, 1.8)
                 if self._click_connect_button():
-                    self.logger.log("connect", contact.name, "clicked", "mock button")
+                    self.logger.log("connect", contact.name, "clicked", "button")
                 else:
                     self.logger.log("connect", contact.name, "not_found")
             else:
@@ -454,16 +475,22 @@ class AndroidMockSiteDriver:
             return
         self.logger.log("open_profile", contact.name, "success", f"{contact.title} at {contact.company}")
         self._analyze_open_profile(contact.name)
+        self._score_open_profile_candidate(contact.name)
         self._return_profile_to_top(contact.name)
 
         min_view = float(self.config["profile_view_min_seconds"])
         max_view = float(self.config["profile_view_max_seconds"])
         time.sleep(random.uniform(min_view, max_view) + random.uniform(0.8, 2.8))
 
+        if self._manual_connect_required_when_scoring():
+            self.logger.log("connect", contact.name, "manual_required", "candidate_scoring_enabled")
+            self.action_transition_pause()
+            return
+
         if random.random() < float(self.config["connect_probability"]):
             self.think(0.5, 1.8)
             if self._click_connect_button():
-                self.logger.log("connect", contact.name, "clicked", "mock button")
+                self.logger.log("connect", contact.name, "clicked", "button")
             else:
                 self.logger.log("connect", contact.name, "not_found")
         else:
@@ -893,6 +920,128 @@ class AndroidMockSiteDriver:
         if random.random() < 0.45:
             self.action_transition_pause()
         self.logger.log("profile_analysis_end", label, "success", "humanized_profile_review")
+
+    def _score_open_profile_candidate(self, search_query: str) -> None:
+        """Score the currently opened profile without changing navigation.
+
+        This is the integration hook for the existing profile-finding flow: once
+        the branch has already found/opened a profile, snapshot visible text,
+        score it, and persist it. It does not click Connect.
+        """
+        discovery = self.config.get("candidate_discovery", {})
+        if not discovery.get("score_existing_profile_flow", True):
+            return
+        try:
+            visible_text = self._visible_text_for_candidate_scoring()
+            if not visible_text.strip():
+                self.logger.log("candidate_profile_score", search_query, "empty", "no_visible_text")
+                return
+            candidate = self.candidate_extractor.from_visible_text(
+                visible_text,
+                search_query,
+                "existing_profile_flow",
+                int(time.time()),
+            )
+            if not candidate:
+                self.logger.log("candidate_profile_score", search_query, "empty", "extractor_returned_none")
+                return
+            if candidate.profile_url and candidate.profile_url.startswith("mockin://") and self.app_package == self.config.get("linkedin_app_package", "com.linkedin.android"):
+                candidate.profile_url = None
+            candidate.additional_metadata.update(
+                {
+                    "source": "existing_profile_flow",
+                    "driver_mode": "android_existing_flow",
+                    "app_package": self.app_package,
+                    "manual_connect_required": self._manual_connect_required_when_scoring(),
+                    "captured_at": utc_now(),
+                }
+            )
+            self._save_scored_profile_candidate(candidate, search_query)
+            self.logger.log(
+                "candidate_profile_scored",
+                candidate.name or search_query,
+                "success",
+                f"score={candidate.score},recommendation={candidate.additional_metadata.get('recommendation')}",
+            )
+        except Exception as exc:
+            self.logger.log("candidate_profile_score", search_query, "failed", repr(exc))
+
+    def _visible_text_for_candidate_scoring(self) -> str:
+        blocks: list[str] = []
+        try:
+            for node in self.d(className="android.widget.TextView"):
+                info = node.info or {}
+                text = str(info.get("text") or info.get("contentDescription") or "").strip()
+                if 1 < len(text) < 260:
+                    blocks.append(text)
+        except Exception:
+            pass
+        if not blocks:
+            xml = self._visible_hierarchy()
+            values = re.findall(r'text="([^"]+)"|content-desc="([^"]+)"', xml)
+            for left, right in values:
+                value = self._xml_unescape(left or right)
+                if 1 < len(value) < 260:
+                    blocks.append(value)
+        return "\n".join(self._dedupe_text_blocks(blocks))
+
+    def _save_scored_profile_candidate(self, candidate: Candidate, search_query: str) -> None:
+        output_dir = Path(self.config.get("candidate_discovery", {}).get("output_dir", "output/candidate_discovery"))
+        if self._candidate_persistence is None:
+            self._candidate_persistence = CandidatePersistenceService(output_dir)
+        if self._profile_flow_run is None:
+            self._profile_flow_run = DiscoveryRun(
+                run_id=f"existing_profile_flow_{int(time.time())}",
+                created_at=utc_now(),
+                search_query=search_query,
+                candidates=[],
+                state={"source": "existing_profile_flow"},
+            )
+            self._profile_flow_run_path = self._candidate_persistence.next_run_path()
+        self._profile_flow_run.search_query = search_query
+        self._profile_flow_run.candidates = self._candidate_deduplicator.merge(
+            self._profile_flow_run.candidates,
+            [candidate],
+        )
+        self._profile_flow_run.state.update(
+            {
+                "last_search_query": search_query,
+                "last_saved_at": utc_now(),
+                "candidate_count": len(self._profile_flow_run.candidates),
+                "manual_connect_required": self._manual_connect_required_when_scoring(),
+            }
+        )
+        self._candidate_persistence.save(self._profile_flow_run, self._profile_flow_run_path or self._candidate_persistence.next_run_path())
+
+    def _manual_connect_required_when_scoring(self) -> bool:
+        discovery = self.config.get("candidate_discovery", {})
+        if not discovery.get("score_existing_profile_flow", True):
+            return False
+        linkedin_package = self.config.get("linkedin_app_package", "com.linkedin.android")
+        if self.app_package == linkedin_package:
+            return True
+        return bool(discovery.get("manual_connect_required", False))
+
+    def _dedupe_text_blocks(self, blocks: list[str]) -> list[str]:
+        seen: set[str] = set()
+        result: list[str] = []
+        for block in blocks:
+            clean = self._xml_unescape(block).strip()
+            key = clean.lower()
+            if clean and key not in seen:
+                seen.add(key)
+                result.append(clean)
+        return result
+
+    def _xml_unescape(self, value: str) -> str:
+        return (
+            value.replace("&amp;", "&")
+            .replace("&quot;", '"')
+            .replace("&#39;", "'")
+            .replace("&lt;", "<")
+            .replace("&gt;", ">")
+            .strip()
+        )
 
     def _return_profile_to_top(self, label: str) -> None:
         """After reviewing a mock profile, move back near the top before connect."""
