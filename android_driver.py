@@ -762,7 +762,8 @@ class AndroidMockSiteDriver:
                 try:
                     if selector.exists(timeout=1.0):
                         selector.click()
-                        self.think(0.3, 0.8)
+                        self.think(0.5, 1.0)
+                        self._dismiss_follow_notification_popup()
                         return True
                 except Exception:
                     pass
@@ -781,6 +782,8 @@ class AndroidMockSiteDriver:
                 ]:
                     if button.exists(timeout=1.0):
                         button.click()
+                        self.think(0.5, 1.0)
+                        self._dismiss_follow_notification_popup()
                         return True
             except Exception:
                 pass
@@ -790,11 +793,69 @@ class AndroidMockSiteDriver:
                 width, height = self.d.window_size()
                 for y_ratio in (0.34, 0.40, 0.46):
                     self.d.click(int(width * random.uniform(0.18, 0.34)), int(height * y_ratio))
+                    self.think(0.5, 1.0)
+                    self._dismiss_follow_notification_popup()
+                    return True
+            except Exception:
+                pass
+        clicked = self._click_text("Connect") or self._click_text("Follow")
+        if clicked:
+            self.think(0.5, 1.0)
+            self._dismiss_follow_notification_popup()
+        return clicked
+
+    def _dismiss_follow_notification_popup(self) -> bool:
+        """If a follow-notification dialog appears, choose Off."""
+        if self.target != "app":
+            return False
+
+        popup_markers = [
+            self.d(textContains="notification"),
+            self.d(textContains="Notification"),
+            self.d(descriptionContains="notification"),
+            self.d(descriptionContains="Notification"),
+        ]
+        popup_visible = False
+        for marker in popup_markers:
+            try:
+                if marker.exists(timeout=0.6):
+                    popup_visible = True
+                    break
+            except Exception:
+                pass
+
+        off_selectors = [
+            self.d(text="Off"),
+            self.d(text="off"),
+            self.d(textContains="Off"),
+            self.d(description="Off"),
+            self.d(descriptionContains="Off"),
+        ]
+        for selector in off_selectors:
+            try:
+                if selector.exists(timeout=0.8):
+                    selector.click()
+                    self.logger.log("follow_notification_popup", self.target, "clicked", "off")
                     self.think(0.3, 0.8)
                     return True
             except Exception:
                 pass
-        return self._click_text("Connect") or self._click_text("Follow")
+
+        if popup_visible:
+            # Last-resort: many three-option sheets place Off as the bottom or
+            # right-most option. Try safe lower-sheet coordinates, then continue.
+            try:
+                width, height = self.d.window_size()
+                for x_ratio, y_ratio in ((0.50, 0.78), (0.82, 0.72), (0.50, 0.84)):
+                    self.d.click(int(width * x_ratio), int(height * y_ratio))
+                    self.think(0.3, 0.7)
+                    if not self.d(textContains="Notification").exists(timeout=0.3):
+                        self.logger.log("follow_notification_popup", self.target, "clicked", "off_coordinate_fallback")
+                        return True
+            except Exception:
+                pass
+            self.logger.log("follow_notification_popup", self.target, "not_found", "off_option_missing")
+        return False
 
     def _check_notifications(self) -> None:
         if self.target != "app":
