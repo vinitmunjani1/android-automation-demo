@@ -64,8 +64,11 @@ def run_once(mode: str, config: dict, contacts: list[Contact], logger: ActionLog
     driver = build_driver(mode, config, logger)
     try:
         driver.open_app()
-        driver.scroll_feed()
-        driver.search_and_visit_contacts(contacts)
+        if config.get("action_order", "sequential") == "random" and hasattr(driver, "run_random_journey"):
+            driver.run_random_journey(contacts)
+        else:
+            driver.scroll_feed()
+            driver.search_and_visit_contacts(contacts)
         logger.log("run_complete", mode, "success", f"contacts={len(contacts)}")
     except KeyboardInterrupt:
         logger.log("run_interrupted", mode, "stopped", "KeyboardInterrupt")

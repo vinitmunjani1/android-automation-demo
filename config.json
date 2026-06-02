@@ -20,6 +20,14 @@
     "typing_delay_max_seconds": 0.32,
     "typo_probability": 0.0
   },
+  "action_order": "random",
+  "random_journey": {
+    "min_actions": 8,
+    "max_actions": 18,
+    "max_feed_scrolls_per_action": 3,
+    "idle_min_seconds": 1.2,
+    "idle_max_seconds": 4.5
+  },
   "max_contacts_per_run": 10,
   "mock_site_url": "http://127.0.0.1:8000",
   "android_target": "web",

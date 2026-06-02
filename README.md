@@ -55,4 +55,14 @@ Native app short version:
 python3 main.py --now --mode android
 ```
 
+### Randomized mock QA journey
+
+By default, `config.json` uses:
+
+```json
+"action_order": "random"
+```
+
+That makes each run choose a different bounded sequence of mock actions: feed reading, scrolling, likes, searches, profile visits, home navigation, and idle pauses. Set it back to `"sequential"` if you want the older feed-then-search flow.
+
 > This driver is intentionally scoped to the included mock site/app. It should not be pointed at LinkedIn or used for real-platform auto-engagement.

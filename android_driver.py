@@ -59,23 +59,7 @@ class AndroidMockSiteDriver:
         count = random.randint(int(self.config["feed_scroll_min"]), int(self.config["feed_scroll_max"]))
         self.logger.log("feed_session_start", "mock_feed", "success", f"scrolls={count},target={self.target}")
         for i in range(1, count + 1):
-            self.think(
-                float(self.human.get("feed_read_min_seconds", 1.8)),
-                float(self.human.get("feed_read_max_seconds", 5.2)),
-            )
-
-            if random.random() < float(self.config["like_probability"]):
-                self.think(0.5, 1.7)
-                if self._click_like_button():
-                    self.logger.log("like_post", f"visible_post_{i}")
-                    self.think(0.3, 1.0)
-                else:
-                    self.logger.log("like_post", f"visible_post_{i}", "not_found")
-
-            self._human_swipe(direction="up")
-            self.logger.log("scroll_feed", f"post_window_{i}", "success", "humanized=random_delay+random_distance")
-            if random.random() < 0.25:
-                self.think(0.8, 2.0)
+            self._scroll_feed_once(i)
         self.logger.log("feed_session_end", "mock_feed")
 
     def search_and_visit_contacts(self, contacts: Iterable[Contact]) -> None:
@@ -108,6 +92,106 @@ class AndroidMockSiteDriver:
             else:
                 self.logger.log("connect", contact.name, "skipped", "random decision")
             self.think(1.0, 2.8)
+
+    def run_random_journey(self, contacts: list[Contact]) -> None:
+        """Run a randomized, bounded mock QA journey.
+
+        This varies test coverage order for the controlled mock app/site. It is
+        not intended for stealth or for use on real social platforms.
+        """
+        settings = self.config.get("random_journey", {})
+        min_actions = int(settings.get("min_actions", 8))
+        max_actions = int(settings.get("max_actions", 18))
+        action_count = random.randint(min_actions, max_actions)
+        remaining_contacts = contacts[:]
+        random.shuffle(remaining_contacts)
+        self.logger.log("random_journey_start", self.target, "success", f"actions={action_count}")
+
+        last_action = ""
+        repeated = 0
+        for step in range(1, action_count + 1):
+            choices = ["feed", "feed", "pause", "home"]
+            if remaining_contacts:
+                choices.extend(["search", "search"])
+            action = random.choice(choices)
+
+            # Avoid comically long same-action streaks while keeping the order varied.
+            if action == last_action:
+                repeated += 1
+                if repeated >= 3:
+                    action = random.choice([c for c in choices if c != last_action])
+                    repeated = 0
+            else:
+                repeated = 0
+            last_action = action
+
+            self.logger.log("random_action", f"step_{step}", "selected", action)
+            if action == "feed":
+                for _ in range(random.randint(1, int(settings.get("max_feed_scrolls_per_action", 3)))):
+                    self._scroll_feed_once(step)
+            elif action == "search" and remaining_contacts:
+                self._visit_contact(remaining_contacts.pop(0))
+            elif action == "home":
+                self._go_home()
+                self.logger.log("home", self.target, "success", "random navigation")
+                self.think(0.8, 2.4)
+            else:
+                self.logger.log("idle_pause", self.target, "success", "random reading/thinking pause")
+                self.think(
+                    float(settings.get("idle_min_seconds", 1.2)),
+                    float(settings.get("idle_max_seconds", 4.5)),
+                )
+
+        self.logger.log("random_journey_end", self.target, "success", f"remaining_contacts={len(remaining_contacts)}")
+
+    def _visit_contact(self, contact: Contact) -> None:
+        self._go_home()
+        self.think(0.7, 1.8)
+        if not self._focus_search_box():
+            self.logger.log("search_person", contact.name, "failed", "search input missing")
+            return
+        self.think(0.2, 0.8)
+        self._type_text_human(contact.name)
+        self.logger.log("search_person", contact.name, "success", "typed_humanized=true")
+        self.think(1.2, 3.0)
+
+        if not self._click_contact(contact.name):
+            self.logger.log("open_profile", contact.name, "not_found")
+            return
+        self.logger.log("open_profile", contact.name, "success", f"{contact.title} at {contact.company}")
+
+        min_view = float(self.config["profile_view_min_seconds"])
+        max_view = float(self.config["profile_view_max_seconds"])
+        time.sleep(random.uniform(min_view, max_view) + random.uniform(0.8, 2.8))
+
+        if random.random() < float(self.config["connect_probability"]):
+            self.think(0.5, 1.8)
+            if self._click_connect_button():
+                self.logger.log("connect", contact.name, "clicked", "mock button")
+            else:
+                self.logger.log("connect", contact.name, "not_found")
+        else:
+            self.logger.log("connect", contact.name, "skipped", "random decision")
+        self.think(1.0, 2.8)
+
+    def _scroll_feed_once(self, index: int) -> None:
+        self.think(
+            float(self.human.get("feed_read_min_seconds", 1.8)),
+            float(self.human.get("feed_read_max_seconds", 5.2)),
+        )
+
+        if random.random() < float(self.config["like_probability"]):
+            self.think(0.5, 1.7)
+            if self._click_like_button():
+                self.logger.log("like_post", f"visible_post_{index}")
+                self.think(0.3, 1.0)
+            else:
+                self.logger.log("like_post", f"visible_post_{index}", "not_found")
+
+        self._human_swipe(direction="up")
+        self.logger.log("scroll_feed", f"post_window_{index}", "success", "humanized=random_delay+random_distance")
+        if random.random() < 0.25:
+            self.think(0.8, 2.0)
 
     def _human_swipe(self, direction: str = "up") -> None:
         width, height = self.d.window_size()
