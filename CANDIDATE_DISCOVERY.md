@@ -65,7 +65,8 @@ mock_driver.py / android_driver.py / linkedin_review_driver.py
 6. Each opened profile is scored/saved, then the flow returns to results and continues.
 7. The ranked candidates are appended to `output/candidate_discovery/latest.json`, sorted by score.
 8. Coordinate filter/result fallbacks are disabled by default for real LinkedIn to avoid accidental random taps.
-9. Auto-connect is skipped; you click Connect manually if you choose.
+9. Before major actions, the bottom-menu guard checks whether navigation is visible; if not, it presses Back up to the configured limit before continuing.
+10. Auto-connect is skipped; you click Connect manually if you choose.
 
 ### Real LinkedIn review-assistant workflow
 
@@ -151,6 +152,12 @@ If `--search-query` is omitted, discovery uses the first `search_queries` value 
 ## Configuration
 
 ```json
+"bottom_menu_guard": {
+  "enabled": true,
+  "max_back_presses": 2,
+  "wait_min_seconds": 0.5,
+  "wait_max_seconds": 1.1
+},
 "candidate_discovery": {
   "default_search_query": "founder",
   "output_dir": "output/candidate_discovery",

@@ -66,6 +66,12 @@
     "min_seconds": 0.05,
     "max_seconds": 0.2
   },
+  "bottom_menu_guard": {
+    "enabled": true,
+    "max_back_presses": 2,
+    "wait_min_seconds": 0.5,
+    "wait_max_seconds": 1.1
+  },
   "candidate_discovery": {
     "default_search_query": "founder",
     "output_dir": "output/candidate_discovery",

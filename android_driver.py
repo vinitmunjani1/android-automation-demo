@@ -92,6 +92,7 @@ class AndroidMockSiteDriver:
 
     def search_and_visit_contacts(self, contacts: Iterable[Contact]) -> None:
         for contact in contacts:
+            self._guard_bottom_menu_before_step(f"search_{contact.name}")
             self._go_home()
             self.think(0.7, 1.8)
             if not self._focus_search_box():
@@ -272,6 +273,7 @@ class AndroidMockSiteDriver:
         last_action = ""
         repeated = 0
         for step in range(1, action_count + 1):
+            self._guard_bottom_menu_before_step(f"step_{step}_pre_action")
             choices = ["pause", "home"]
             real_linkedin = self.app_package == self.config.get("linkedin_app_package", "com.linkedin.android")
             if remaining_contacts:
@@ -428,6 +430,69 @@ class AndroidMockSiteDriver:
                 pass
         return "unknown"
 
+    def _is_bottom_menu_visible(self) -> bool:
+        if self.target != "app":
+            return True
+        try:
+            xml = self._visible_hierarchy().lower()
+            bottom_markers = [
+                self.rid("home_tab").lower(),
+                self.rid("network_tab").lower(),
+                self.rid("messages_button").lower(),
+                self.rid("notifications_button").lower(),
+            ]
+            if any(marker in xml for marker in bottom_markers):
+                return True
+            width, height = self.d.window_size()
+            bottom_cutoff = int(height * 0.82)
+            for selector in [
+                self.d(descriptionContains="Home"),
+                self.d(descriptionContains="My Network"),
+                self.d(descriptionContains="Network"),
+                self.d(descriptionContains="Messaging"),
+                self.d(descriptionContains="Notifications"),
+                self.d(textContains="Home"),
+                self.d(textContains="My Network"),
+                self.d(textContains="Messaging"),
+                self.d(textContains="Notifications"),
+            ]:
+                try:
+                    if not selector.exists(timeout=0.1):
+                        continue
+                    bounds = selector.info.get("bounds") or {}
+                    bottom = int(bounds.get("bottom", 0))
+                    top = int(bounds.get("top", 0))
+                    if bottom >= bottom_cutoff or top >= bottom_cutoff:
+                        return True
+                except Exception:
+                    pass
+        except Exception:
+            return False
+        return False
+
+    def _guard_bottom_menu_before_step(self, label: str) -> None:
+        settings = self.config.get("bottom_menu_guard", {})
+        if self.target != "app" or not settings.get("enabled", True):
+            return
+        if self._is_bottom_menu_visible():
+            return
+        max_backs = int(settings.get("max_back_presses", 2))
+        self.logger.log("bottom_menu_guard", label, "missing", f"back_presses={max_backs}")
+        for attempt in range(1, max_backs + 1):
+            try:
+                self.d.press("back")
+                self.think(
+                    float(settings.get("wait_min_seconds", 0.5)),
+                    float(settings.get("wait_max_seconds", 1.1)),
+                )
+                if self._is_bottom_menu_visible():
+                    self.logger.log("bottom_menu_guard", label, "recovered", f"attempt={attempt}")
+                    return
+            except Exception as exc:
+                self.logger.log("bottom_menu_guard", label, "failed", repr(exc))
+                return
+        self.logger.log("bottom_menu_guard", label, "still_missing", "continuing_cautiously")
+
     def _ensure_current_page(self, expected: str, label: str) -> bool:
         current = self._current_mock_page_name()
         if current == expected:
@@ -468,6 +533,7 @@ class AndroidMockSiteDriver:
         self.logger.log("orientation_end", self.target, "success", "ready_for_next_action")
 
     def _visit_contact(self, contact: Contact) -> None:
+        self._guard_bottom_menu_before_step(f"profile_finder_{contact.name}")
         self._go_home()
         self.think(0.7, 1.8)
         if not self._focus_search_box():
@@ -516,6 +582,7 @@ class AndroidMockSiteDriver:
         self.action_transition_pause()
 
     def _scroll_feed_once(self, index: int) -> None:
+        self._guard_bottom_menu_before_step(f"feed_{index}")
         if self.target == "app" and not self._ensure_current_page("home_feed", f"feed_{index}"):
             return
 
@@ -1223,6 +1290,7 @@ class AndroidMockSiteDriver:
         return False
 
     def _check_notifications(self) -> None:
+        self._guard_bottom_menu_before_step("notifications")
         if self.target != "app":
             return
         self.logger.log("notifications_open", self.target, "started", "checking_mock_alerts")
@@ -1348,6 +1416,7 @@ class AndroidMockSiteDriver:
         return False
 
     def _try_repost_visible_post(self) -> bool:
+        self._guard_bottom_menu_before_step("repost")
         if self.target != "app":
             return False
         self.logger.log("repost", self.target, "started", "visible_post")
@@ -1378,6 +1447,7 @@ class AndroidMockSiteDriver:
             return False
 
     def _browse_network_and_connect(self) -> None:
+        self._guard_bottom_menu_before_step("network")
         if self.target != "app":
             return
         self.logger.log("network_open", self.target, "started", "browse_suggestions")
@@ -1442,6 +1512,7 @@ class AndroidMockSiteDriver:
         return False
 
     def _open_messages_and_reply(self) -> None:
+        self._guard_bottom_menu_before_step("messages")
         if self.target != "app":
             return
         self.logger.log("messages_open", self.target, "started", "browse_inbox")
@@ -1994,6 +2065,7 @@ class AndroidMockSiteDriver:
         return False
 
     def _go_home(self) -> None:
+        self._guard_bottom_menu_before_step("go_home")
         if self.target == "app":
             try:
                 home = self.d(resourceId=self.rid("home_button"))
