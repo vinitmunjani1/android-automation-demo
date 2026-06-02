@@ -101,6 +101,7 @@ class AndroidMockSiteDriver:
             self._type_text_human(contact.name)
             self.logger.log("search_person", contact.name, "success", "typed_humanized=true")
             self.think(1.2, 3.0)
+            self._open_all_search_results(contact.name)
             self._apply_candidate_search_filters(contact.name)
             if self._collect_search_results_instead_of_opening():
                 collected = self._collect_and_score_visible_search_results(contact.name)
@@ -478,6 +479,7 @@ class AndroidMockSiteDriver:
         # Do not press Back here. On some Android devices the keyboard is not
         # considered open after adb text input, so Back closes the mock app.
         self.think(1.2, 3.0)
+        self._open_all_search_results(contact.name)
         self._apply_candidate_search_filters(contact.name)
         if self._collect_search_results_instead_of_opening():
             collected = self._collect_and_score_visible_search_results(contact.name)
@@ -1518,7 +1520,33 @@ class AndroidMockSiteDriver:
         discovery = self.config.get("candidate_discovery", {})
         return bool(self._is_real_linkedin_app() and discovery.get("collect_search_results_without_opening", True))
 
+    def _open_all_search_results(self, search_query: str) -> bool:
+        selectors = [
+            self.d(text="Show all results"),
+            self.d(textContains="Show all results"),
+            self.d(descriptionContains="Show all results"),
+            self.d(textContains="See all results"),
+            self.d(descriptionContains="See all results"),
+        ]
+        for selector in selectors:
+            try:
+                if selector.exists(timeout=1.2):
+                    selector.click()
+                    self.logger.log("search_show_all_results", search_query, "clicked", "before_filters")
+                    self.think(1.0, 2.0)
+                    return True
+            except Exception:
+                pass
+        self.logger.log("search_show_all_results", search_query, "not_found", "maybe_already_on_results")
+        return False
+
     def _collect_and_score_visible_search_results(self, search_query: str) -> int:
+        settings = self.config.get("candidate_discovery", {})
+        if settings.get("open_random_profile_results", True):
+            return self._open_random_profile_results_and_score(search_query)
+        return self._score_visible_result_cards_without_opening(search_query)
+
+    def _score_visible_result_cards_without_opening(self, search_query: str) -> int:
         settings = self.config.get("candidate_discovery", {})
         pages = int(settings.get("result_collection_pages", 4))
         max_candidates = int(settings.get("max_candidates_per_query", 25))
@@ -1568,6 +1596,120 @@ class AndroidMockSiteDriver:
             self._safe_results_scroll_down()
             self.think(0.8, 1.6)
         return collected
+
+    def _open_random_profile_results_and_score(self, search_query: str) -> int:
+        settings = self.config.get("candidate_discovery", {})
+        pages = int(settings.get("result_collection_pages", 4))
+        max_profiles = int(settings.get("max_profiles_to_open_per_query", settings.get("max_candidates_per_query", 25)))
+        opened = 0
+        seen_signatures: set[str] = set()
+        no_progress = 0
+        previous_page_signature = ""
+
+        for page in range(1, pages + 1):
+            candidates = self._visible_profile_result_selectors()
+            random.shuffle(candidates)
+            page_opened = 0
+            for selector in candidates:
+                if opened >= max_profiles:
+                    return opened
+                try:
+                    info = selector.info or {}
+                    signature = self._selector_signature(info)
+                    if signature in seen_signatures:
+                        continue
+                    seen_signatures.add(signature)
+                    selector.click()
+                    self.think(1.2, 2.2)
+                    if not self._looks_like_open_profile():
+                        self.logger.log("candidate_profile_open", search_query, "skipped", "click_did_not_open_profile")
+                        self._return_to_results_if_needed()
+                        continue
+                    self._score_open_profile_candidate(search_query)
+                    opened += 1
+                    page_opened += 1
+                    self.logger.log("candidate_profile_open", search_query, "scored", f"opened={opened},page={page}")
+                    self._return_to_results_if_needed()
+                    self.think(0.6, 1.2)
+                except Exception as exc:
+                    self.logger.log("candidate_profile_open", search_query, "failed", repr(exc))
+                    self._return_to_results_if_needed()
+
+            page_signature = self._page_signature()
+            if page_opened == 0 or page_signature == previous_page_signature:
+                no_progress += 1
+            else:
+                no_progress = 0
+            if no_progress >= int(settings.get("no_progress_scroll_limit", 2)):
+                break
+            previous_page_signature = page_signature
+            self._safe_results_scroll_down()
+            self.think(0.8, 1.6)
+        return opened
+
+    def _visible_profile_result_selectors(self):
+        selectors = []
+        seen: set[str] = set()
+        candidates = []
+        try:
+            candidates.extend(list(self.d(className="android.widget.TextView")))
+        except Exception:
+            pass
+        for selector in candidates:
+            try:
+                info = selector.info or {}
+                text = self._xml_unescape(str(info.get("text") or info.get("contentDescription") or ""))
+                if not self._looks_like_profile_result_text(text):
+                    continue
+                signature = self._selector_signature(info)
+                if signature in seen:
+                    continue
+                seen.add(signature)
+                selectors.append(selector)
+            except Exception:
+                pass
+        return selectors
+
+    def _looks_like_profile_result_text(self, text: str) -> bool:
+        if not self._is_candidate_result_text(text):
+            return False
+        lowered = text.lower()
+        blocked = ["jobs", "job", "hiring now", "company", "group", "school", "course"]
+        if any(term == lowered or lowered.startswith(term + " ") for term in blocked):
+            return False
+        scoring = self.config.get("candidate_scoring", {})
+        profile_terms = ["1st", "2nd", "connect", "follow", "message"]
+        for key in ("title_keywords", "company_keywords", "positive_keywords"):
+            profile_terms.extend(str(value).lower() for value in scoring.get(key, []))
+        return any(term and term in lowered for term in profile_terms)
+
+    def _selector_signature(self, info: dict) -> str:
+        bounds = info.get("bounds") or {}
+        text = str(info.get("text") or info.get("contentDescription") or "")[:120]
+        return f"{text}|{bounds}"
+
+    def _looks_like_open_profile(self) -> bool:
+        profile_markers = [
+            self.d(textContains="Connect"),
+            self.d(textContains="Message"),
+            self.d(textContains="Follow"),
+            self.d(textContains="About"),
+            self.d(textContains="Experience"),
+        ]
+        for marker in profile_markers:
+            try:
+                if marker.exists(timeout=0.5):
+                    return True
+            except Exception:
+                pass
+        return False
+
+    def _return_to_results_if_needed(self) -> None:
+        try:
+            self.d.press("back")
+            self.think(0.8, 1.5)
+        except Exception:
+            pass
 
     def _extract_people_result_candidates(self, search_query: str, page: int) -> list[Candidate]:
         blocks = self._visible_result_text_blocks()

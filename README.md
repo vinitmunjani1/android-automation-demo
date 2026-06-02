@@ -43,7 +43,7 @@ python3 main.py --now --mode mock --discover-candidates --search-query founder
 
 Edit `candidate_profile.json` whenever you want to change search queries, keywords, weights, and score thresholds.
 
-The existing Android action runner now includes profile-finder actions that use `candidate_profile.json` search queries, apply LinkedIn search filters for People + 1st/2nd connections, collect/score visible result-list profiles, and save a ranked JSON list. If `mock_app_package`/the active app package is `com.linkedin.android`, it does not randomly tap result rows or auto-connect.
+The existing Android action runner now includes profile-finder actions that use `candidate_profile.json` search queries, click **Show all results**, apply LinkedIn search filters for People + 1st/2nd connections, open detected profile result cards in shuffled order, score/save each opened profile, then return to results. If `mock_app_package`/the active app package is `com.linkedin.android`, it does not use random coordinate taps or auto-connect.
 
 Run it with:
 

@@ -59,11 +59,13 @@ mock_driver.py / android_driver.py / linkedin_review_driver.py
 
 1. The normal Android action runner uses `candidate_profile.json` search queries as its people/profile input.
 2. `contacts.csv` is disabled by default and only used if `allow_legacy_contacts_csv=true`.
-3. Profile-finder actions search each query and apply LinkedIn filters: `People` plus connection types `1st` and `2nd`.
-4. For real LinkedIn, visible result-list profiles are collected/scored directly instead of randomly tapping rows or opening one profile at a time.
-5. The ranked candidates are appended to `output/candidate_discovery/latest.json`, sorted by score.
-6. Coordinate filter/result fallbacks are disabled by default for real LinkedIn to avoid accidental random taps.
-7. Auto-connect is skipped; you click Connect manually if you choose.
+3. Profile-finder actions search each query and click `Show all results`.
+4. The flow applies LinkedIn filters: `People` plus connection types `1st` and `2nd`.
+5. For real LinkedIn, detected profile result cards are shuffled and opened in random order using selectors only.
+6. Each opened profile is scored/saved, then the flow returns to results and continues.
+7. The ranked candidates are appended to `output/candidate_discovery/latest.json`, sorted by score.
+8. Coordinate filter/result fallbacks are disabled by default for real LinkedIn to avoid accidental random taps.
+9. Auto-connect is skipped; you click Connect manually if you choose.
 
 ### Real LinkedIn review-assistant workflow
 
@@ -163,6 +165,8 @@ If `--search-query` is omitted, discovery uses the first `search_queries` value 
   "apply_connection_filters": true,
   "connection_filters": ["1st", "2nd"],
   "collect_search_results_without_opening": true,
+  "open_random_profile_results": true,
+  "max_profiles_to_open_per_query": 10,
   "result_collection_pages": 4,
   "allow_coordinate_filter_fallbacks": false,
   "allow_coordinate_result_fallbacks": false

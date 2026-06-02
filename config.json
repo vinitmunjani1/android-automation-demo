@@ -85,6 +85,8 @@
       "2nd"
     ],
     "collect_search_results_without_opening": true,
+    "open_random_profile_results": true,
+    "max_profiles_to_open_per_query": 10,
     "result_collection_pages": 4,
     "allow_coordinate_filter_fallbacks": false,
     "allow_coordinate_result_fallbacks": false
