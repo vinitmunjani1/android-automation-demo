@@ -122,7 +122,10 @@ class AndroidMockSiteDriver:
         self.logger.log("random_journey_start", self.target, "success", f"actions={action_count}")
 
         if self.target == "app" and self.config.get("check_notifications_on_start", True):
-            self._check_notifications()
+            if self._has_new_notifications_indicator():
+                self._check_notifications()
+            else:
+                self.logger.log("notifications_start_check", self.target, "skipped", "no_unread_indicator")
 
         self._record_page_progress("journey_start", recover=False)
 
@@ -357,8 +360,12 @@ class AndroidMockSiteDriver:
         self.action_transition_pause()
 
     def _scroll_feed_once(self, index: int) -> None:
-        if self.target == "app" and not self._ensure_current_page("home_feed", f"feed_{index}"):
-            return
+        if self.target == "app" and self._current_mock_page_name() != "home_feed":
+            self._go_home()
+            self.think(0.6, 1.2)
+            if self._current_mock_page_name() != "home_feed":
+                self.logger.log("current_page_guard", f"feed_{index}", "blocked", f"expected=home_feed,actual={self._current_mock_page_name()}")
+                return
 
         self.think(
             float(self.human.get("feed_read_min_seconds", 1.8)),
@@ -456,6 +463,37 @@ class AndroidMockSiteDriver:
             )
         except Exception:
             return False
+
+    def _has_new_notifications_indicator(self) -> bool:
+        """Best-effort unread/badge check before opening notifications."""
+        if self.target != "app":
+            return False
+        try:
+            xml = self._visible_hierarchy().lower()
+            unread_needles = [
+                "unread notifications",
+                "new notifications",
+                "notification badge",
+                "notifications badge",
+                self.rid("notifications_badge").lower(),
+                self.rid("notification_badge").lower(),
+                self.rid("unread_badge").lower(),
+            ]
+            if any(needle in xml for needle in unread_needles):
+                return True
+            for selector in [self.d(descriptionContains="Notifications"), self.d(textContains="Notifications")]:
+                try:
+                    if not selector.exists(timeout=0.2):
+                        continue
+                    info = selector.info or {}
+                    label = " ".join(str(info.get(key) or "") for key in ("text", "contentDescription")).lower()
+                    if "badge" in label or "unread" in label or "new notification" in label:
+                        return True
+                except Exception:
+                    pass
+        except Exception as exc:
+            self.logger.log("notifications_start_check", self.target, "failed", repr(exc))
+        return False
 
     def _is_network_page_open(self, timeout: float = 1.0) -> bool:
         try:
@@ -714,14 +752,35 @@ class AndroidMockSiteDriver:
                 self.d(resourceId=self.rid("like_button"), text="Like"),
                 self.d(text="Like"),
                 self.d(description="Like"),
+                self.d(descriptionContains="Like"),
             ]
             for selector in selectors:
                 try:
                     if selector.exists(timeout=0.8):
+                        info = selector.info or {}
+                        label = " ".join(str(info.get(key) or "") for key in ("text", "contentDescription")).lower()
+                        if "liked" in label or "unlike" in label:
+                            continue
                         selector.click()
                         return True
                 except Exception:
                     pass
+
+            try:
+                width, height = self.d.window_size()
+                for selector in self.d(className="android.widget.TextView"):
+                    info = selector.info or {}
+                    text = self._xml_unescape(str(info.get("text") or info.get("contentDescription") or ""))
+                    if text.strip().lower() != "like":
+                        continue
+                    bounds = info.get("bounds") or {}
+                    cy = (int(bounds.get("top", 0)) + int(bounds.get("bottom", 0))) // 2
+                    cx = (int(bounds.get("left", 0)) + int(bounds.get("right", 0))) // 2
+                    if int(height * 0.35) <= cy <= int(height * 0.86):
+                        self.d.click(cx or int(width * 0.22), cy)
+                        return True
+            except Exception:
+                pass
 
             self.logger.log("like_post", self.target, "not_found", "like_button_not_visible_on_current_page")
         return self._click_text("Like") or self._click_xpath_text("Like")
@@ -1294,8 +1353,10 @@ class AndroidMockSiteDriver:
         for selector in selectors:
             try:
                 if selector.exists(timeout=1.2):
+                    if self._looks_like_filter_or_search_control(selector):
+                        continue
                     self.think(0.2, 0.7)
-                    selector.click()
+                    self._click_profile_result_selector(selector)
                     self.think(0.7, 1.4)
                     if self.d(resourceId=self.rid("profile_page")).exists(timeout=1.0):
                         return True
@@ -1310,6 +1371,33 @@ class AndroidMockSiteDriver:
                 pass
         return False
 
+    def _looks_like_filter_or_search_control(self, selector) -> bool:
+        try:
+            info = selector.info or {}
+            label = self._xml_unescape(str(info.get("text") or info.get("contentDescription") or "")).strip().lower()
+            return label in {"1st", "2nd", "3rd", "people", "connections", "all filters", "show results", "apply", "search"}
+        except Exception:
+            return False
+
+    def _click_profile_result_selector(self, selector) -> None:
+        """Click the result row/card area instead of small filter/action text."""
+        try:
+            info = selector.info or {}
+            bounds = info.get("bounds") or {}
+            left = int(bounds.get("left", 0))
+            right = int(bounds.get("right", 0))
+            top = int(bounds.get("top", 0))
+            bottom = int(bounds.get("bottom", 0))
+            width, height = self.d.window_size()
+            if bottom > top:
+                x = max(int(width * 0.18), min(int(width * 0.62), left + int((right - left) * 0.35)))
+                y = max(int(height * 0.22), min(int(height * 0.84), (top + bottom) // 2))
+                self.d.click(x, y)
+                return
+        except Exception:
+            pass
+        selector.click()
+
     def _go_home(self) -> None:
         if self.target == "app":
             try:
@@ -1322,9 +1410,8 @@ class AndroidMockSiteDriver:
                 pass
         self._click_text("Home")
         time.sleep(random.uniform(0.5, 1.2))
-        for _ in range(random.randint(1, 2)):
-            self._human_swipe(direction="down")
-            time.sleep(random.uniform(0.25, 0.75))
+        # Do not swipe down after Home. If the feed is already at the top this
+        # can trigger pull-to-refresh repeatedly.
 
     def _focus_search_box(self) -> bool:
         if self.target == "app":
