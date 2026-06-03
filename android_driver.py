@@ -306,8 +306,8 @@ class AndroidMockSiteDriver:
             elif action in {"search", "profile_finder"} and remaining_contacts:
                 self._visit_contact(remaining_contacts.pop(0))
             elif action == "home":
-                self._go_home()
-                self.logger.log("home", self.target, "success", "random navigation")
+                home_ok = self._go_home()
+                self.logger.log("home", self.target, "success" if home_ok else "not_confirmed", "random navigation")
                 self.action_transition_pause()
             elif action == "notifications":
                 self._check_notifications()
@@ -1078,6 +1078,9 @@ class AndroidMockSiteDriver:
         if not discovery.get("score_existing_profile_flow", True):
             return
         try:
+            if self.target == "app" and self._current_mock_page_name() != "profile":
+                self.logger.log("candidate_profile_score", search_query, "skipped", f"not_profile_page={self._current_mock_page_name()}")
+                return
             visible_text = self._visible_text_for_candidate_scoring()
             if not visible_text.strip():
                 self.logger.log("candidate_profile_score", search_query, "empty", "no_visible_text")
@@ -1090,6 +1093,9 @@ class AndroidMockSiteDriver:
             )
             if not candidate:
                 self.logger.log("candidate_profile_score", search_query, "empty", "extractor_returned_none")
+                return
+            if self._is_generic_candidate_name(candidate.name):
+                self.logger.log("candidate_profile_score", search_query, "skipped", f"generic_name={candidate.name}")
                 return
             if candidate.profile_url and candidate.profile_url.startswith("mockin://") and self.app_package == self.config.get("linkedin_app_package", "com.linkedin.android"):
                 candidate.profile_url = None
@@ -1118,7 +1124,7 @@ class AndroidMockSiteDriver:
             for node in self.d(className="android.widget.TextView"):
                 info = node.info or {}
                 text = str(info.get("text") or info.get("contentDescription") or "").strip()
-                if 1 < len(text) < 260:
+                if 1 < len(text) < 260 and not self._is_generic_candidate_name(text):
                     blocks.append(text)
         except Exception:
             pass
@@ -1127,9 +1133,26 @@ class AndroidMockSiteDriver:
             values = re.findall(r'text="([^"]+)"|content-desc="([^"]+)"', xml)
             for left, right in values:
                 value = self._xml_unescape(left or right)
-                if 1 < len(value) < 260:
+                if 1 < len(value) < 260 and not self._is_generic_candidate_name(value):
                     blocks.append(value)
         return "\n".join(self._dedupe_text_blocks(blocks))
+
+    def _is_generic_candidate_name(self, value: str | None) -> bool:
+        if not value:
+            return True
+        normalized = re.sub(r"\s+", " ", str(value)).strip().lower()
+        if not normalized:
+            return True
+        generic_exact = {
+            "people", "posts", "jobs", "companies", "groups", "schools", "courses", "services", "events",
+            "1st", "2nd", "3rd", "connections", "all filters", "show results", "apply", "search", "home",
+            "my network", "messaging", "notifications", "connect", "follow", "message", "like", "comment", "share",
+        }
+        if normalized in generic_exact:
+            return True
+        if normalized.startswith(("people ", "posts ", "jobs ", "companies ", "groups ")):
+            return True
+        return False
 
     def _save_scored_profile_candidate(self, candidate: Candidate, search_query: str) -> None:
         output_dir = Path(self.config.get("candidate_discovery", {}).get("output_dir", "output/candidate_discovery"))
@@ -1889,6 +1912,8 @@ class AndroidMockSiteDriver:
                 sequence,
             )
             if candidate:
+                if self._is_generic_candidate_name(candidate.name):
+                    continue
                 candidate.additional_metadata["raw_visible_text"] = window[:500]
                 candidates.append(candidate)
         return candidates
@@ -1916,8 +1941,10 @@ class AndroidMockSiteDriver:
         clean = text.strip()
         if len(clean) < 2 or len(clean) > 240:
             return False
+        if self._is_generic_candidate_name(clean):
+            return False
         noise_exact = {
-            "home", "jobs", "my network", "notifications", "messaging", "search", "premium",
+            "home", "people", "jobs", "my network", "notifications", "messaging", "search", "premium",
             "posts", "companies", "groups", "events", "services", "schools", "courses",
         }
         if clean.lower() in noise_exact:
@@ -2207,22 +2234,55 @@ class AndroidMockSiteDriver:
                 pass
         return False
 
-    def _go_home(self) -> None:
+    def _go_home(self) -> bool:
         self._guard_bottom_menu_before_step("go_home")
         if self.target == "app":
-            try:
-                home = self.d(resourceId=self.rid("home_button"))
-                if home.exists(timeout=0.8):
-                    home.click()
-                    time.sleep(random.uniform(0.5, 1.2))
-                    return
-            except Exception:
-                pass
+            for attempt in range(1, 4):
+                if self._tap_home_tab():
+                    self.think(0.6, 1.2)
+                    if self._current_mock_page_name() == "home_feed":
+                        return True
+                # If a profile/search overlay swallowed the Home tap, back out
+                # once and retry against the bottom nav. Avoid swipe-down here;
+                # it can trigger refresh or scroll the wrong page.
+                try:
+                    if self._current_mock_page_name() in {"profile", "search_results", "search"}:
+                        self.d.press("back")
+                        self.think(0.5, 1.0)
+                except Exception:
+                    pass
+                self._reveal_bottom_nav()
+            self.logger.log("home", self.target, "not_confirmed", f"page={self._current_mock_page_name()}")
+            return False
         self._click_text("Home")
         time.sleep(random.uniform(0.5, 1.2))
-        for _ in range(random.randint(1, 2)):
-            self._human_swipe(direction="down")
-            time.sleep(random.uniform(0.25, 0.75))
+        return True
+
+    def _tap_home_tab(self) -> bool:
+        selectors = [
+            self.d(resourceId=self.rid("home_button")),
+            self.d(resourceId=self.rid("home_tab")),
+            self.d(description="Home"),
+            self.d(descriptionContains="Home"),
+            self.d(text="Home"),
+        ]
+        for selector in selectors:
+            try:
+                if selector.exists(timeout=0.6):
+                    selector.click()
+                    return True
+            except Exception:
+                pass
+        try:
+            width, height = self.d.window_size()
+            for x_ratio in (0.10, 0.12, 0.08):
+                self.d.click(int(width * x_ratio), int(height * 0.955))
+                self.think(0.4, 0.8)
+                if self._current_mock_page_name() == "home_feed":
+                    return True
+        except Exception:
+            pass
+        return False
 
     def _focus_search_box(self) -> bool:
         if self.target == "app":
@@ -2330,6 +2390,10 @@ class AndroidMockSiteDriver:
         return False
 
     def _type_text_human(self, text: str) -> None:
+        if self.target == "app" and self._is_real_linkedin_app():
+            self._type_text_stable(text)
+            return
+
         typo_probability = float(self.human.get("typo_probability", 0.0))
         rethink_probability = float(self.human.get("typing_rethink_probability", 0.0))
         for index, char in enumerate(text):
@@ -2359,3 +2423,19 @@ class AndroidMockSiteDriver:
 
             if char == " " or (index > 1 and random.random() < 0.12):
                 time.sleep(random.uniform(0.25, 0.9))
+
+    def _type_text_stable(self, text: str) -> None:
+        """Keyboard-safe text entry for real app runs.
+
+        Avoid typo/rethink loops and random long pauses while the soft keyboard
+        is open; those can land as accidental key taps on some devices.
+        """
+        try:
+            escaped = text.replace("%", "%25").replace(" ", "%s")
+            self.d.shell(f"input text {shlex.quote(escaped)}")
+            time.sleep(random.uniform(0.25, 0.55))
+        except Exception:
+            for char in text:
+                token = "%s" if char == " " else char
+                self.d.shell(f"input text {shlex.quote(token)}")
+                time.sleep(random.uniform(0.03, 0.08))
