@@ -17,6 +17,7 @@
   "profile_top_return_min_swipes": 1,
   "profile_top_return_max_swipes": 2,
   "check_notifications_on_start": true,
+  "allow_real_linkedin_feed_review": true,
   "pre_notifications_wait_min_seconds": 0.3,
   "pre_notifications_wait_max_seconds": 0.8,
   "notifications_scan_min_seconds": 0.6,

@@ -266,7 +266,10 @@ class AndroidMockSiteDriver:
         self.logger.log("random_journey_start", self.target, "success", f"actions={action_count}")
 
         if self.target == "app" and self.config.get("check_notifications_on_start", True):
-            self._check_notifications()
+            if self._has_new_notifications_indicator():
+                self._check_notifications()
+            else:
+                self.logger.log("notifications_start_check", self.target, "skipped", "no_unread_indicator")
 
         self._record_page_progress("journey_start", recover=False)
 
@@ -282,6 +285,8 @@ class AndroidMockSiteDriver:
                 choices.extend(["feed", "feed"])
                 if self.target == "app":
                     choices.extend(["notifications", "network", "messages", "repost"])
+            elif self.config.get("allow_real_linkedin_feed_review", True):
+                choices.extend(["feed", "feed"])
             action = random.choice(choices)
 
             # Avoid comically long same-action streaks while keeping the order varied.
@@ -583,8 +588,12 @@ class AndroidMockSiteDriver:
 
     def _scroll_feed_once(self, index: int) -> None:
         self._guard_bottom_menu_before_step(f"feed_{index}")
-        if self.target == "app" and not self._ensure_current_page("home_feed", f"feed_{index}"):
-            return
+        if self.target == "app" and self._current_mock_page_name() != "home_feed":
+            self._go_home()
+            self.think(0.6, 1.2)
+            if self._current_mock_page_name() != "home_feed":
+                self.logger.log("current_page_guard", f"feed_{index}", "blocked", f"expected=home_feed,actual={self._current_mock_page_name()}")
+                return
 
         self.think(
             float(self.human.get("feed_read_min_seconds", 1.8)),
@@ -682,6 +691,37 @@ class AndroidMockSiteDriver:
             )
         except Exception:
             return False
+
+    def _has_new_notifications_indicator(self) -> bool:
+        """Open Notifications on startup only when the nav exposes unread state."""
+        if self.target != "app":
+            return False
+        try:
+            xml = self._visible_hierarchy().lower()
+            unread_needles = [
+                "unread notifications",
+                "new notifications",
+                "notification badge",
+                "notifications badge",
+                self.rid("notifications_badge").lower(),
+                self.rid("notification_badge").lower(),
+                self.rid("unread_badge").lower(),
+            ]
+            if any(needle in xml for needle in unread_needles):
+                return True
+            for selector in [self.d(descriptionContains="Notifications"), self.d(textContains="Notifications")]:
+                try:
+                    if not selector.exists(timeout=0.2):
+                        continue
+                    info = selector.info or {}
+                    label = " ".join(str(info.get(key) or "") for key in ("text", "contentDescription")).lower()
+                    if "badge" in label or "unread" in label or "new notification" in label or re.search(r"\b\d+\s+(new|unread)\b", label):
+                        return True
+                except Exception:
+                    pass
+        except Exception as exc:
+            self.logger.log("notifications_start_check", self.target, "failed", repr(exc))
+        return False
 
     def _is_network_page_open(self, timeout: float = 1.0) -> bool:
         try:
@@ -940,14 +980,35 @@ class AndroidMockSiteDriver:
                 self.d(resourceId=self.rid("like_button"), text="Like"),
                 self.d(text="Like"),
                 self.d(description="Like"),
+                self.d(descriptionContains="Like"),
             ]
             for selector in selectors:
                 try:
                     if selector.exists(timeout=0.8):
+                        info = selector.info or {}
+                        label = " ".join(str(info.get(key) or "") for key in ("text", "contentDescription")).lower()
+                        if "liked" in label or "unlike" in label:
+                            continue
                         selector.click()
                         return True
                 except Exception:
                     pass
+
+            try:
+                width, height = self.d.window_size()
+                for selector in self.d(className="android.widget.TextView"):
+                    info = selector.info or {}
+                    text = self._xml_unescape(str(info.get("text") or info.get("contentDescription") or ""))
+                    if text.strip().lower() != "like":
+                        continue
+                    bounds = info.get("bounds") or {}
+                    cy = (int(bounds.get("top", 0)) + int(bounds.get("bottom", 0))) // 2
+                    cx = (int(bounds.get("left", 0)) + int(bounds.get("right", 0))) // 2
+                    if int(height * 0.35) <= cy <= int(height * 0.86):
+                        self.d.click(cx or int(width * 0.22), cy)
+                        return True
+            except Exception:
+                pass
 
             self.logger.log("like_post", self.target, "not_found", "like_button_not_visible_on_current_page")
         return self._click_text("Like") or self._click_xpath_text("Like")
@@ -1681,16 +1742,15 @@ class AndroidMockSiteDriver:
             candidates = self._visible_profile_result_selectors()
             random.shuffle(candidates)
             page_opened = 0
-            for selector in candidates:
+            for target in candidates:
                 if opened >= max_profiles:
                     return opened
                 try:
-                    info = selector.info or {}
-                    signature = self._selector_signature(info)
+                    signature = str(target.get("signature") or "")
                     if signature in seen_signatures:
                         continue
                     seen_signatures.add(signature)
-                    selector.click()
+                    self.d.click(int(target["x"]), int(target["y"]))
                     self.think(1.2, 2.2)
                     if not self._looks_like_open_profile():
                         self.logger.log("candidate_profile_open", search_query, "skipped", "click_did_not_open_profile")
@@ -1723,6 +1783,10 @@ class AndroidMockSiteDriver:
         seen: set[str] = set()
         candidates = []
         try:
+            width, height = self.d.window_size()
+        except Exception:
+            width, height = 0, 0
+        try:
             candidates.extend(list(self.d(className="android.widget.TextView")))
         except Exception:
             pass
@@ -1732,11 +1796,20 @@ class AndroidMockSiteDriver:
                 text = self._xml_unescape(str(info.get("text") or info.get("contentDescription") or ""))
                 if not self._looks_like_profile_result_text(text):
                     continue
+                if not self._looks_like_result_row_bounds(info, width, height):
+                    continue
                 signature = self._selector_signature(info)
                 if signature in seen:
                     continue
                 seen.add(signature)
-                selectors.append(selector)
+                bounds = info.get("bounds") or {}
+                left = int(bounds.get("left", 0))
+                right = int(bounds.get("right", 0))
+                top = int(bounds.get("top", 0))
+                bottom = int(bounds.get("bottom", 0))
+                x = max(int(width * 0.18), min(int(width * 0.62), left + int((right - left) * 0.35))) if width else (left + right) // 2
+                y = max(int(height * 0.24), min(int(height * 0.84), (top + bottom) // 2)) if height else (top + bottom) // 2
+                selectors.append({"signature": signature, "x": x, "y": y, "text": text})
             except Exception:
                 pass
         return selectors
@@ -1745,7 +1818,13 @@ class AndroidMockSiteDriver:
         if not self._is_candidate_result_text(text):
             return False
         lowered = text.lower()
-        blocked = ["jobs", "job", "hiring now", "company", "group", "school", "course"]
+        blocked_exact = {
+            "1st", "2nd", "3rd", "people", "connections", "all filters", "show results", "apply",
+            "posts", "jobs", "companies", "groups", "schools", "courses", "services", "events",
+        }
+        if lowered.strip() in blocked_exact:
+            return False
+        blocked = ["job", "hiring now", "company", "group", "school", "course"]
         if any(term == lowered or lowered.startswith(term + " ") for term in blocked):
             return False
         scoring = self.config.get("candidate_scoring", {})
@@ -1754,31 +1833,48 @@ class AndroidMockSiteDriver:
             profile_terms.extend(str(value).lower() for value in scoring.get(key, []))
         return any(term and term in lowered for term in profile_terms)
 
+    def _looks_like_result_row_bounds(self, info: dict, width: int, height: int) -> bool:
+        if not height:
+            return True
+        bounds = info.get("bounds") or {}
+        top = int(bounds.get("top", 0))
+        bottom = int(bounds.get("bottom", 0))
+        if bottom <= top:
+            return False
+        center_y = (top + bottom) // 2
+        # Exclude search bar/filter chips/header tabs and bottom nav.
+        return int(height * 0.22) <= center_y <= int(height * 0.86)
+
     def _selector_signature(self, info: dict) -> str:
         bounds = info.get("bounds") or {}
         text = str(info.get("text") or info.get("contentDescription") or "")[:120]
         return f"{text}|{bounds}"
 
     def _looks_like_open_profile(self) -> bool:
-        profile_markers = [
-            self.d(textContains="Connect"),
-            self.d(textContains="Message"),
-            self.d(textContains="Follow"),
-            self.d(textContains="About"),
-            self.d(textContains="Experience"),
-        ]
-        for marker in profile_markers:
+        if self.target == "app":
             try:
-                if marker.exists(timeout=0.5):
+                if self.d(resourceId=self.rid("profile_page")).exists(timeout=0.4):
                     return True
             except Exception:
                 pass
+            try:
+                xml = self._visible_hierarchy().lower()
+                if any(noise in xml for noise in ("show all results", "see all results", self.rid("results_list").lower())):
+                    return False
+                has_action = any(term in xml for term in ("connect", "follow", "message"))
+                has_profile_section = any(term in xml for term in ("about", "activity", "experience", "education"))
+                return has_action and has_profile_section
+            except Exception:
+                return False
         return False
 
     def _return_to_results_if_needed(self) -> None:
         try:
-            self.d.press("back")
-            self.think(0.8, 1.5)
+            if self._looks_like_open_profile():
+                self.d.press("back")
+                self.think(0.8, 1.5)
+            elif self._is_search_page_open(timeout=0.3):
+                return
         except Exception:
             pass
 
@@ -1901,13 +1997,34 @@ class AndroidMockSiteDriver:
 
     def _select_connection_type_filters(self, search_query: str) -> list[str]:
         selected: list[str] = []
+        configured = [str(label) for label in self.config.get("candidate_discovery", {}).get("connection_filters", ["1st", "2nd"])]
+
+        # Some LinkedIn result layouts expose 1st/2nd as chips directly after
+        # tapping People. Select those first before trying the full filter sheet.
+        for label in configured:
+            if self._click_filter_option(label, timeout=0.35):
+                selected.append(label)
+                self.think(0.2, 0.6)
+        if selected:
+            self.logger.log("search_filter_connections", search_query, "clicked", f"direct={','.join(selected)}")
+            return selected
+
         if not self._open_connection_filter_menu(search_query):
             return selected
-        for label in self.config.get("candidate_discovery", {}).get("connection_filters", ["1st", "2nd"]):
-            if self._click_filter_option(str(label)):
-                selected.append(str(label))
+        for label in configured:
+            if self._click_filter_option(label):
+                selected.append(label)
                 self.think(0.2, 0.6)
-        self._apply_open_filter_dialog(search_query)
+            else:
+                self.logger.log("search_filter_option", search_query, "not_found", label)
+        if selected:
+            self._apply_open_filter_dialog(search_query)
+        else:
+            try:
+                self.d.press("back")
+                self.think(0.4, 0.9)
+            except Exception:
+                pass
         return selected
 
     def _open_connection_filter_menu(self, search_query: str) -> bool:
@@ -1915,19 +2032,28 @@ class AndroidMockSiteDriver:
             self.d(text="Connections"),
             self.d(textContains="Connections"),
             self.d(descriptionContains="Connections"),
+            self.d(text="Connection degree"),
+            self.d(textContains="Connection degree"),
+            self.d(descriptionContains="Connection degree"),
             self.d(text="All filters"),
             self.d(textContains="All filters"),
             self.d(descriptionContains="All filters"),
+            self.d(text="Filters"),
+            self.d(textContains="Filters"),
+            self.d(descriptionContains="Filters"),
         ]
-        for selector in selectors:
-            try:
-                if selector.exists(timeout=0.8):
-                    selector.click()
-                    self.think(0.6, 1.2)
-                    self.logger.log("search_filter_connections", search_query, "opened", "selector")
-                    return True
-            except Exception:
-                pass
+        for attempt in range(1, 3):
+            for selector in selectors:
+                try:
+                    if selector.exists(timeout=0.8):
+                        selector.click()
+                        self.think(0.6, 1.2)
+                        self.logger.log("search_filter_connections", search_query, "opened", f"selector_attempt={attempt}")
+                        return True
+                except Exception:
+                    pass
+            if attempt == 1:
+                self._horizontal_filter_chip_scroll()
         if self.config.get("candidate_discovery", {}).get("allow_coordinate_filter_fallbacks", False) or not self._is_real_linkedin_app():
             try:
                 width, height = self.d.window_size()
@@ -1943,18 +2069,35 @@ class AndroidMockSiteDriver:
         self.logger.log("search_filter_connections", search_query, "not_found", "continuing")
         return False
 
-    def _click_filter_option(self, label: str) -> bool:
+    def _horizontal_filter_chip_scroll(self) -> None:
+        try:
+            width, height = self.d.window_size()
+            y = int(height * 0.16)
+            self.d.swipe(int(width * 0.82), y, int(width * 0.28), y, duration=0.25)
+            self.think(0.3, 0.7)
+        except Exception:
+            pass
+
+    def _click_filter_option(self, label: str, timeout: float = 0.6) -> bool:
         option_texts = [label, f"{label} connections", f"{label} degree", f"{label}-degree"]
         selectors = []
         for text in option_texts:
-            selectors.extend([self.d(text=text), self.d(textContains=text), self.d(descriptionContains=text)])
-        for selector in selectors:
-            try:
-                if selector.exists(timeout=0.6):
-                    selector.click()
-                    return True
-            except Exception:
-                pass
+            selectors.extend([self.d(text=text), self.d(description=text), self.d(textContains=text), self.d(descriptionContains=text)])
+        for attempt in range(1, 3):
+            for selector in selectors:
+                try:
+                    if selector.exists(timeout=timeout):
+                        selector.click()
+                        return True
+                except Exception:
+                    pass
+            if attempt == 1:
+                try:
+                    width, height = self.d.window_size()
+                    self.d.swipe(int(width * 0.72), int(height * 0.76), int(width * 0.72), int(height * 0.46), duration=0.25)
+                    self.think(0.3, 0.7)
+                except Exception:
+                    pass
         return False
 
     def _apply_open_filter_dialog(self, search_query: str) -> None:
