@@ -2,10 +2,22 @@ from __future__ import annotations
 
 import hashlib
 import random
+import re
 import shlex
 import time
+from pathlib import Path
 from typing import Iterable
 
+from candidate_discovery import (
+    Candidate,
+    CandidateDeduplicator,
+    CandidateExtractor,
+    CandidatePersistenceService,
+    CandidateScorer,
+    DiscoveryRun,
+    human_dwell,
+    utc_now,
+)
 from logger import ActionLogger
 from mock_driver import Contact
 
@@ -33,6 +45,11 @@ class AndroidMockSiteDriver:
         self.target = config.get("android_target", "web")
         self.app_package = config.get("mock_app_package", "com.mockin.app")
         self.logger = logger
+        self.candidate_extractor = CandidateExtractor(CandidateScorer(config))
+        self._candidate_deduplicator = CandidateDeduplicator()
+        self._profile_flow_run: DiscoveryRun | None = None
+        self._profile_flow_run_path: Path | None = None
+        self._candidate_persistence: CandidatePersistenceService | None = None
         self._last_page_signature = ""
         self._same_page_count = 0
         self._stuck_recovery_count = 0
@@ -75,6 +92,7 @@ class AndroidMockSiteDriver:
 
     def search_and_visit_contacts(self, contacts: Iterable[Contact]) -> None:
         for contact in contacts:
+            self._guard_bottom_menu_before_step(f"search_{contact.name}")
             self._go_home()
             self.think(0.7, 1.8)
             if not self._focus_search_box():
@@ -84,6 +102,13 @@ class AndroidMockSiteDriver:
             self._type_text_human(contact.name)
             self.logger.log("search_person", contact.name, "success", "typed_humanized=true")
             self.think(1.2, 3.0)
+            self._open_all_search_results(contact.name)
+            self._apply_candidate_search_filters(contact.name)
+            if self._collect_search_results_instead_of_opening():
+                collected = self._collect_and_score_visible_search_results(contact.name)
+                self.logger.log("candidate_results_ranked", contact.name, "success", f"candidates={collected}")
+                self.action_transition_pause()
+                continue
 
             if not self._click_contact(contact.name):
                 self.logger.log("open_profile", contact.name, "not_found")
@@ -91,27 +116,146 @@ class AndroidMockSiteDriver:
                 continue
             self.logger.log("open_profile", contact.name, "success", f"{contact.title} at {contact.company}")
             self._analyze_open_profile(contact.name)
+            self._score_open_profile_candidate(contact.name)
             self._return_profile_to_top(contact.name)
 
             min_view = float(self.config["profile_view_min_seconds"])
             max_view = float(self.config["profile_view_max_seconds"])
             time.sleep(random.uniform(min_view, max_view) + random.uniform(0.8, 2.8))
 
+            if self._manual_connect_required_when_scoring():
+                self.logger.log("connect", contact.name, "manual_required", "candidate_scoring_enabled")
+                self.action_transition_pause()
+                continue
+
             if random.random() < float(self.config["connect_probability"]):
                 self.think(0.5, 1.8)
                 if self._click_connect_button():
-                    self.logger.log("connect", contact.name, "clicked", "mock button")
+                    self.logger.log("connect", contact.name, "clicked", "button")
                 else:
                     self.logger.log("connect", contact.name, "not_found")
             else:
                 self.logger.log("connect", contact.name, "skipped", "random decision")
             self.action_transition_pause()
 
-    def run_random_journey(self, contacts: list[Contact]) -> None:
-        """Run a randomized, bounded mock QA journey.
+    def discover_candidates_for_query(self, search_query: str, state: dict) -> Iterable[Candidate]:
+        """Discover visible mock candidates while reusing existing UI behavior.
 
-        This varies test coverage order for the controlled mock app/site. It is
-        not intended for stealth or for use on real social platforms.
+        This stays inside the controlled MockIn/mock-site harness. It mimics a
+        recruiter reviewing search results: search, pause on visible cards,
+        extract visible details, scroll progressively, and stop on no progress.
+        """
+        self._go_home()
+        self.think(0.7, 1.8)
+        if not self._focus_search_box():
+            self.logger.log("candidate_search", search_query, "failed", "search input missing")
+            return []
+
+        self._type_text_human(search_query)
+        self.logger.log("candidate_search", search_query, "success", "typed_humanized=true")
+        self.think(1.2, 2.8)
+
+        discovery_config = self.config.get("candidate_discovery", {})
+        max_candidates = int(discovery_config.get("max_candidates_per_query", 25))
+        max_scrolls = int(discovery_config.get("max_scrolls_per_query", 8))
+        no_progress_limit = int(discovery_config.get("no_progress_scroll_limit", 2))
+        seen_keys: set[str] = set(state.get("seen_candidate_keys", []))
+        no_progress = 0
+        yielded = 0
+
+        for page_index in range(1, max_scrolls + 1):
+            page_candidates = self._extract_visible_candidate_cards(search_query, page_index)
+            new_on_page = 0
+            for candidate in page_candidates:
+                key = candidate.identity_key()
+                if key in seen_keys:
+                    continue
+                seen_keys.add(key)
+                new_on_page += 1
+                yielded += 1
+                human_dwell(self.config)
+                self.logger.log("candidate_card_detected", candidate.name or "unknown", "success", f"score={candidate.score},page={page_index}")
+                yield candidate
+                if yielded >= max_candidates:
+                    state["seen_candidate_keys"] = sorted(seen_keys)
+                    state["last_source_page"] = page_index
+                    return
+
+            if new_on_page == 0:
+                no_progress += 1
+                self.logger.log("candidate_discovery_progress", search_query, "no_change", f"page={page_index},streak={no_progress}")
+            else:
+                no_progress = 0
+
+            if no_progress >= no_progress_limit:
+                break
+            before = self._page_signature() if self.target == "app" else self._visible_hierarchy()
+            self._scroll_content_down()
+            self.think(0.8, 2.0)
+            after = self._page_signature() if self.target == "app" else self._visible_hierarchy()
+            if before == after:
+                no_progress += 1
+
+        if yielded == 0:
+            self.logger.log("candidate_search_empty", search_query, "empty", "no_visible_candidates")
+        state["seen_candidate_keys"] = sorted(seen_keys)
+        state["last_source_page"] = page_index if 'page_index' in locals() else 0
+        return []
+
+    def _extract_visible_candidate_cards(self, search_query: str, page_index: int) -> list[Candidate]:
+        candidates: list[Candidate] = []
+        if self.target == "app":
+            selectors = [
+                self.d(resourceId=self.rid("person_result")),
+                self.d(resourceId=self.rid("network_person_card")),
+                self.d(descriptionContains="Person result"),
+                self.d(descriptionContains="Network suggestion"),
+            ]
+            sequence = 0
+            for selector in selectors:
+                try:
+                    if not selector.exists(timeout=0.2):
+                        continue
+                    sequence += 1
+                    info = selector.info or {}
+                    text = "\n".join(str(info.get(key) or "") for key in ("text", "contentDescription"))
+                    if not text.strip():
+                        text = self._visible_hierarchy()
+                    candidate = self.candidate_extractor.from_visible_text(text, search_query, f"mock_app_search_page_{page_index}", sequence)
+                    if candidate:
+                        candidate.additional_metadata.update({"driver_mode": "android", "target": self.target})
+                        candidates.append(candidate)
+                except Exception as exc:
+                    self.logger.log("candidate_extract_card", search_query, "failed", repr(exc))
+
+        if not candidates:
+            xml = self._visible_hierarchy()
+            # Fallback for UIAutomator variants: extract candidates from visible
+            # content descriptions generated by the mock app/site.
+            markers = []
+            for marker in ("Person result ", "Open profile ", "Network suggestion "):
+                start = 0
+                while True:
+                    idx = xml.find(marker, start)
+                    if idx == -1:
+                        break
+                    fragment = xml[idx: idx + 220]
+                    fragment = fragment.replace("&amp;", "&").replace("&quot;", '"')
+                    markers.append(fragment)
+                    start = idx + len(marker)
+            for sequence, fragment in enumerate(markers, start=1):
+                candidate = self.candidate_extractor.from_visible_text(fragment, search_query, f"visible_hierarchy_page_{page_index}", sequence)
+                if candidate:
+                    candidate.additional_metadata.update({"driver_mode": "android", "target": self.target, "extractor": "hierarchy_fallback"})
+                    candidates.append(candidate)
+        return candidates
+
+    def run_random_journey(self, contacts: list[Contact]) -> None:
+        """Run a randomized, bounded journey.
+
+        For real LinkedIn package runs, keep the action mix limited to profile
+        finder/search, home, and pauses. Mock-only engagement actions remain
+        available for the controlled MockIn harness.
         """
         settings = self.config.get("random_journey", {})
         min_actions = int(settings.get("min_actions", 8))
@@ -132,11 +276,17 @@ class AndroidMockSiteDriver:
         last_action = ""
         repeated = 0
         for step in range(1, action_count + 1):
-            choices = ["feed", "feed", "pause", "home"]
-            if self.target == "app":
-                choices.extend(["notifications", "network", "messages", "repost"])
+            self._guard_bottom_menu_before_step(f"step_{step}_pre_action")
+            choices = ["pause", "home"]
+            real_linkedin = self.app_package == self.config.get("linkedin_app_package", "com.linkedin.android")
             if remaining_contacts:
-                choices.extend(["search", "search"])
+                choices.extend(["profile_finder", "profile_finder", "profile_finder"])
+            if not real_linkedin:
+                choices.extend(["feed", "feed"])
+                if self.target == "app":
+                    choices.extend(["notifications", "network", "messages", "repost"])
+            elif self.config.get("allow_real_linkedin_feed_review", True):
+                choices.extend(["feed", "feed"])
             action = random.choice(choices)
 
             # Avoid comically long same-action streaks while keeping the order varied.
@@ -153,7 +303,7 @@ class AndroidMockSiteDriver:
             if action == "feed":
                 for _ in range(random.randint(1, int(settings.get("max_feed_scrolls_per_action", 3)))):
                     self._scroll_feed_once(step)
-            elif action == "search" and remaining_contacts:
+            elif action in {"search", "profile_finder"} and remaining_contacts:
                 self._visit_contact(remaining_contacts.pop(0))
             elif action == "home":
                 self._go_home()
@@ -285,6 +435,69 @@ class AndroidMockSiteDriver:
                 pass
         return "unknown"
 
+    def _is_bottom_menu_visible(self) -> bool:
+        if self.target != "app":
+            return True
+        try:
+            xml = self._visible_hierarchy().lower()
+            bottom_markers = [
+                self.rid("home_tab").lower(),
+                self.rid("network_tab").lower(),
+                self.rid("messages_button").lower(),
+                self.rid("notifications_button").lower(),
+            ]
+            if any(marker in xml for marker in bottom_markers):
+                return True
+            width, height = self.d.window_size()
+            bottom_cutoff = int(height * 0.82)
+            for selector in [
+                self.d(descriptionContains="Home"),
+                self.d(descriptionContains="My Network"),
+                self.d(descriptionContains="Network"),
+                self.d(descriptionContains="Messaging"),
+                self.d(descriptionContains="Notifications"),
+                self.d(textContains="Home"),
+                self.d(textContains="My Network"),
+                self.d(textContains="Messaging"),
+                self.d(textContains="Notifications"),
+            ]:
+                try:
+                    if not selector.exists(timeout=0.1):
+                        continue
+                    bounds = selector.info.get("bounds") or {}
+                    bottom = int(bounds.get("bottom", 0))
+                    top = int(bounds.get("top", 0))
+                    if bottom >= bottom_cutoff or top >= bottom_cutoff:
+                        return True
+                except Exception:
+                    pass
+        except Exception:
+            return False
+        return False
+
+    def _guard_bottom_menu_before_step(self, label: str) -> None:
+        settings = self.config.get("bottom_menu_guard", {})
+        if self.target != "app" or not settings.get("enabled", True):
+            return
+        if self._is_bottom_menu_visible():
+            return
+        max_backs = int(settings.get("max_back_presses", 2))
+        self.logger.log("bottom_menu_guard", label, "missing", f"back_presses={max_backs}")
+        for attempt in range(1, max_backs + 1):
+            try:
+                self.d.press("back")
+                self.think(
+                    float(settings.get("wait_min_seconds", 0.5)),
+                    float(settings.get("wait_max_seconds", 1.1)),
+                )
+                if self._is_bottom_menu_visible():
+                    self.logger.log("bottom_menu_guard", label, "recovered", f"attempt={attempt}")
+                    return
+            except Exception as exc:
+                self.logger.log("bottom_menu_guard", label, "failed", repr(exc))
+                return
+        self.logger.log("bottom_menu_guard", label, "still_missing", "continuing_cautiously")
+
     def _ensure_current_page(self, expected: str, label: str) -> bool:
         current = self._current_mock_page_name()
         if current == expected:
@@ -325,6 +538,7 @@ class AndroidMockSiteDriver:
         self.logger.log("orientation_end", self.target, "success", "ready_for_next_action")
 
     def _visit_contact(self, contact: Contact) -> None:
+        self._guard_bottom_menu_before_step(f"profile_finder_{contact.name}")
         self._go_home()
         self.think(0.7, 1.8)
         if not self._focus_search_box():
@@ -336,6 +550,13 @@ class AndroidMockSiteDriver:
         # Do not press Back here. On some Android devices the keyboard is not
         # considered open after adb text input, so Back closes the mock app.
         self.think(1.2, 3.0)
+        self._open_all_search_results(contact.name)
+        self._apply_candidate_search_filters(contact.name)
+        if self._collect_search_results_instead_of_opening():
+            collected = self._collect_and_score_visible_search_results(contact.name)
+            self.logger.log("candidate_results_ranked", contact.name, "success", f"candidates={collected}")
+            self.action_transition_pause()
+            return
 
         if not self._click_contact(contact.name):
             self.logger.log("open_profile", contact.name, "not_found")
@@ -343,16 +564,22 @@ class AndroidMockSiteDriver:
             return
         self.logger.log("open_profile", contact.name, "success", f"{contact.title} at {contact.company}")
         self._analyze_open_profile(contact.name)
+        self._score_open_profile_candidate(contact.name)
         self._return_profile_to_top(contact.name)
 
         min_view = float(self.config["profile_view_min_seconds"])
         max_view = float(self.config["profile_view_max_seconds"])
         time.sleep(random.uniform(min_view, max_view) + random.uniform(0.8, 2.8))
 
+        if self._manual_connect_required_when_scoring():
+            self.logger.log("connect", contact.name, "manual_required", "candidate_scoring_enabled")
+            self.action_transition_pause()
+            return
+
         if random.random() < float(self.config["connect_probability"]):
             self.think(0.5, 1.8)
             if self._click_connect_button():
-                self.logger.log("connect", contact.name, "clicked", "mock button")
+                self.logger.log("connect", contact.name, "clicked", "button")
             else:
                 self.logger.log("connect", contact.name, "not_found")
         else:
@@ -360,6 +587,7 @@ class AndroidMockSiteDriver:
         self.action_transition_pause()
 
     def _scroll_feed_once(self, index: int) -> None:
+        self._guard_bottom_menu_before_step(f"feed_{index}")
         if self.target == "app" and self._current_mock_page_name() != "home_feed":
             self._go_home()
             self.think(0.6, 1.2)
@@ -465,7 +693,7 @@ class AndroidMockSiteDriver:
             return False
 
     def _has_new_notifications_indicator(self) -> bool:
-        """Best-effort unread/badge check before opening notifications."""
+        """Open Notifications on startup only when the nav exposes unread state."""
         if self.target != "app":
             return False
         try:
@@ -487,7 +715,7 @@ class AndroidMockSiteDriver:
                         continue
                     info = selector.info or {}
                     label = " ".join(str(info.get(key) or "") for key in ("text", "contentDescription")).lower()
-                    if "badge" in label or "unread" in label or "new notification" in label:
+                    if "badge" in label or "unread" in label or "new notification" in label or re.search(r"\b\d+\s+(new|unread)\b", label):
                         return True
                 except Exception:
                     pass
@@ -839,6 +1067,132 @@ class AndroidMockSiteDriver:
             self.action_transition_pause()
         self.logger.log("profile_analysis_end", label, "success", "humanized_profile_review")
 
+    def _score_open_profile_candidate(self, search_query: str) -> None:
+        """Score the currently opened profile without changing navigation.
+
+        This is the integration hook for the existing profile-finding flow: once
+        the branch has already found/opened a profile, snapshot visible text,
+        score it, and persist it. It does not click Connect.
+        """
+        discovery = self.config.get("candidate_discovery", {})
+        if not discovery.get("score_existing_profile_flow", True):
+            return
+        try:
+            visible_text = self._visible_text_for_candidate_scoring()
+            if not visible_text.strip():
+                self.logger.log("candidate_profile_score", search_query, "empty", "no_visible_text")
+                return
+            candidate = self.candidate_extractor.from_visible_text(
+                visible_text,
+                search_query,
+                "existing_profile_flow",
+                int(time.time()),
+            )
+            if not candidate:
+                self.logger.log("candidate_profile_score", search_query, "empty", "extractor_returned_none")
+                return
+            if candidate.profile_url and candidate.profile_url.startswith("mockin://") and self.app_package == self.config.get("linkedin_app_package", "com.linkedin.android"):
+                candidate.profile_url = None
+            candidate.additional_metadata.update(
+                {
+                    "source": "existing_profile_flow",
+                    "driver_mode": "android_existing_flow",
+                    "app_package": self.app_package,
+                    "manual_connect_required": self._manual_connect_required_when_scoring(),
+                    "captured_at": utc_now(),
+                }
+            )
+            self._save_scored_profile_candidate(candidate, search_query)
+            self.logger.log(
+                "candidate_profile_scored",
+                candidate.name or search_query,
+                "success",
+                f"score={candidate.score},recommendation={candidate.additional_metadata.get('recommendation')}",
+            )
+        except Exception as exc:
+            self.logger.log("candidate_profile_score", search_query, "failed", repr(exc))
+
+    def _visible_text_for_candidate_scoring(self) -> str:
+        blocks: list[str] = []
+        try:
+            for node in self.d(className="android.widget.TextView"):
+                info = node.info or {}
+                text = str(info.get("text") or info.get("contentDescription") or "").strip()
+                if 1 < len(text) < 260:
+                    blocks.append(text)
+        except Exception:
+            pass
+        if not blocks:
+            xml = self._visible_hierarchy()
+            values = re.findall(r'text="([^"]+)"|content-desc="([^"]+)"', xml)
+            for left, right in values:
+                value = self._xml_unescape(left or right)
+                if 1 < len(value) < 260:
+                    blocks.append(value)
+        return "\n".join(self._dedupe_text_blocks(blocks))
+
+    def _save_scored_profile_candidate(self, candidate: Candidate, search_query: str) -> None:
+        output_dir = Path(self.config.get("candidate_discovery", {}).get("output_dir", "output/candidate_discovery"))
+        if self._candidate_persistence is None:
+            self._candidate_persistence = CandidatePersistenceService(output_dir)
+        if self._profile_flow_run is None:
+            self._profile_flow_run = DiscoveryRun(
+                run_id=f"existing_profile_flow_{int(time.time())}",
+                created_at=utc_now(),
+                search_query=search_query,
+                candidates=[],
+                state={"source": "existing_profile_flow"},
+            )
+            self._profile_flow_run_path = self._candidate_persistence.next_run_path()
+        self._profile_flow_run.search_query = search_query
+        self._profile_flow_run.candidates = sorted(
+            self._candidate_deduplicator.merge(
+                self._profile_flow_run.candidates,
+                [candidate],
+            ),
+            key=lambda item: item.score or 0,
+            reverse=True,
+        )
+        self._profile_flow_run.state.update(
+            {
+                "last_search_query": search_query,
+                "last_saved_at": utc_now(),
+                "candidate_count": len(self._profile_flow_run.candidates),
+                "manual_connect_required": self._manual_connect_required_when_scoring(),
+            }
+        )
+        self._candidate_persistence.save(self._profile_flow_run, self._profile_flow_run_path or self._candidate_persistence.next_run_path())
+
+    def _manual_connect_required_when_scoring(self) -> bool:
+        discovery = self.config.get("candidate_discovery", {})
+        if not discovery.get("score_existing_profile_flow", True):
+            return False
+        linkedin_package = self.config.get("linkedin_app_package", "com.linkedin.android")
+        if self.app_package == linkedin_package:
+            return True
+        return bool(discovery.get("manual_connect_required", False))
+
+    def _dedupe_text_blocks(self, blocks: list[str]) -> list[str]:
+        seen: set[str] = set()
+        result: list[str] = []
+        for block in blocks:
+            clean = self._xml_unescape(block).strip()
+            key = clean.lower()
+            if clean and key not in seen:
+                seen.add(key)
+                result.append(clean)
+        return result
+
+    def _xml_unescape(self, value: str) -> str:
+        return (
+            value.replace("&amp;", "&")
+            .replace("&quot;", '"')
+            .replace("&#39;", "'")
+            .replace("&lt;", "<")
+            .replace("&gt;", ">")
+            .strip()
+        )
+
     def _return_profile_to_top(self, label: str) -> None:
         """After reviewing a mock profile, move back near the top before connect."""
         if self.target == "app":
@@ -997,6 +1351,7 @@ class AndroidMockSiteDriver:
         return False
 
     def _check_notifications(self) -> None:
+        self._guard_bottom_menu_before_step("notifications")
         if self.target != "app":
             return
         self.logger.log("notifications_open", self.target, "started", "checking_mock_alerts")
@@ -1122,6 +1477,7 @@ class AndroidMockSiteDriver:
         return False
 
     def _try_repost_visible_post(self) -> bool:
+        self._guard_bottom_menu_before_step("repost")
         if self.target != "app":
             return False
         self.logger.log("repost", self.target, "started", "visible_post")
@@ -1152,6 +1508,7 @@ class AndroidMockSiteDriver:
             return False
 
     def _browse_network_and_connect(self) -> None:
+        self._guard_bottom_menu_before_step("network")
         if self.target != "app":
             return
         self.logger.log("network_open", self.target, "started", "browse_suggestions")
@@ -1216,6 +1573,7 @@ class AndroidMockSiteDriver:
         return False
 
     def _open_messages_and_reply(self) -> None:
+        self._guard_bottom_menu_before_step("messages")
         if self.target != "app":
             return
         self.logger.log("messages_open", self.target, "started", "browse_inbox")
@@ -1287,6 +1645,484 @@ class AndroidMockSiteDriver:
         self.logger.log("message_send", self.target, "failed", "input_or_send_missing")
         return False
 
+    def _is_real_linkedin_app(self) -> bool:
+        return self.app_package == self.config.get("linkedin_app_package", "com.linkedin.android")
+
+    def _collect_search_results_instead_of_opening(self) -> bool:
+        discovery = self.config.get("candidate_discovery", {})
+        return bool(self._is_real_linkedin_app() and discovery.get("collect_search_results_without_opening", True))
+
+    def _open_all_search_results(self, search_query: str) -> bool:
+        selectors = [
+            self.d(text="Show all results"),
+            self.d(textContains="Show all results"),
+            self.d(descriptionContains="Show all results"),
+            self.d(textContains="See all results"),
+            self.d(descriptionContains="See all results"),
+        ]
+        for selector in selectors:
+            try:
+                if selector.exists(timeout=1.2):
+                    selector.click()
+                    self.logger.log("search_show_all_results", search_query, "clicked", "before_filters")
+                    self.think(1.0, 2.0)
+                    return True
+            except Exception:
+                pass
+        self.logger.log("search_show_all_results", search_query, "not_found", "maybe_already_on_results")
+        return False
+
+    def _collect_and_score_visible_search_results(self, search_query: str) -> int:
+        settings = self.config.get("candidate_discovery", {})
+        if settings.get("open_random_profile_results", True):
+            return self._open_random_profile_results_and_score(search_query)
+        return self._score_visible_result_cards_without_opening(search_query)
+
+    def _score_visible_result_cards_without_opening(self, search_query: str) -> int:
+        settings = self.config.get("candidate_discovery", {})
+        pages = int(settings.get("result_collection_pages", 4))
+        max_candidates = int(settings.get("max_candidates_per_query", 25))
+        seen: set[str] = set()
+        collected = 0
+        no_progress = 0
+        previous_signature = ""
+
+        for page in range(1, pages + 1):
+            candidates = self._extract_people_result_candidates(search_query, page)
+            page_new = 0
+            for candidate in candidates:
+                key = candidate.identity_key()
+                if key in seen:
+                    continue
+                seen.add(key)
+                candidate.profile_url = None
+                candidate.additional_metadata.update(
+                    {
+                        "source": "linkedin_people_results_list",
+                        "driver_mode": "android_results_collector",
+                        "app_package": self.app_package,
+                        "manual_connect_required": True,
+                        "captured_at": utc_now(),
+                    }
+                )
+                self._save_scored_profile_candidate(candidate, search_query)
+                collected += 1
+                page_new += 1
+                self.logger.log(
+                    "candidate_result_scored",
+                    candidate.name or search_query,
+                    "success",
+                    f"score={candidate.score},page={page},recommendation={candidate.additional_metadata.get('recommendation')}",
+                )
+                if collected >= max_candidates:
+                    return collected
+
+            signature = self._page_signature()
+            if page_new == 0 or signature == previous_signature:
+                no_progress += 1
+            else:
+                no_progress = 0
+            if no_progress >= int(settings.get("no_progress_scroll_limit", 2)):
+                break
+            previous_signature = signature
+            self._safe_results_scroll_down()
+            self.think(0.8, 1.6)
+        return collected
+
+    def _open_random_profile_results_and_score(self, search_query: str) -> int:
+        settings = self.config.get("candidate_discovery", {})
+        pages = int(settings.get("result_collection_pages", 4))
+        max_profiles = int(settings.get("max_profiles_to_open_per_query", settings.get("max_candidates_per_query", 25)))
+        opened = 0
+        seen_signatures: set[str] = set()
+        no_progress = 0
+        previous_page_signature = ""
+
+        for page in range(1, pages + 1):
+            candidates = self._visible_profile_result_selectors()
+            random.shuffle(candidates)
+            page_opened = 0
+            for target in candidates:
+                if opened >= max_profiles:
+                    return opened
+                try:
+                    signature = str(target.get("signature") or "")
+                    if signature in seen_signatures:
+                        continue
+                    seen_signatures.add(signature)
+                    self.d.click(int(target["x"]), int(target["y"]))
+                    self.think(1.2, 2.2)
+                    if not self._looks_like_open_profile():
+                        self.logger.log("candidate_profile_open", search_query, "skipped", "click_did_not_open_profile")
+                        self._return_to_results_if_needed()
+                        continue
+                    self._score_open_profile_candidate(search_query)
+                    opened += 1
+                    page_opened += 1
+                    self.logger.log("candidate_profile_open", search_query, "scored", f"opened={opened},page={page}")
+                    self._return_to_results_if_needed()
+                    self.think(0.6, 1.2)
+                except Exception as exc:
+                    self.logger.log("candidate_profile_open", search_query, "failed", repr(exc))
+                    self._return_to_results_if_needed()
+
+            page_signature = self._page_signature()
+            if page_opened == 0 or page_signature == previous_page_signature:
+                no_progress += 1
+            else:
+                no_progress = 0
+            if no_progress >= int(settings.get("no_progress_scroll_limit", 2)):
+                break
+            previous_page_signature = page_signature
+            self._safe_results_scroll_down()
+            self.think(0.8, 1.6)
+        return opened
+
+    def _visible_profile_result_selectors(self):
+        selectors = []
+        seen: set[str] = set()
+        candidates = []
+        try:
+            width, height = self.d.window_size()
+        except Exception:
+            width, height = 0, 0
+        try:
+            candidates.extend(list(self.d(className="android.widget.TextView")))
+        except Exception:
+            pass
+        for selector in candidates:
+            try:
+                info = selector.info or {}
+                text = self._xml_unescape(str(info.get("text") or info.get("contentDescription") or ""))
+                if not self._looks_like_profile_result_text(text):
+                    continue
+                if not self._looks_like_result_row_bounds(info, width, height):
+                    continue
+                signature = self._selector_signature(info)
+                if signature in seen:
+                    continue
+                seen.add(signature)
+                bounds = info.get("bounds") or {}
+                left = int(bounds.get("left", 0))
+                right = int(bounds.get("right", 0))
+                top = int(bounds.get("top", 0))
+                bottom = int(bounds.get("bottom", 0))
+                x = max(int(width * 0.18), min(int(width * 0.62), left + int((right - left) * 0.35))) if width else (left + right) // 2
+                y = max(int(height * 0.24), min(int(height * 0.84), (top + bottom) // 2)) if height else (top + bottom) // 2
+                selectors.append({"signature": signature, "x": x, "y": y, "text": text})
+            except Exception:
+                pass
+        return selectors
+
+    def _looks_like_profile_result_text(self, text: str) -> bool:
+        if not self._is_candidate_result_text(text):
+            return False
+        lowered = text.lower()
+        blocked_exact = {
+            "1st", "2nd", "3rd", "people", "connections", "all filters", "show results", "apply",
+            "posts", "jobs", "companies", "groups", "schools", "courses", "services", "events",
+        }
+        if lowered.strip() in blocked_exact:
+            return False
+        blocked = ["job", "hiring now", "company", "group", "school", "course"]
+        if any(term == lowered or lowered.startswith(term + " ") for term in blocked):
+            return False
+        scoring = self.config.get("candidate_scoring", {})
+        profile_terms = ["1st", "2nd", "connect", "follow", "message"]
+        for key in ("title_keywords", "company_keywords", "positive_keywords"):
+            profile_terms.extend(str(value).lower() for value in scoring.get(key, []))
+        return any(term and term in lowered for term in profile_terms)
+
+    def _looks_like_result_row_bounds(self, info: dict, width: int, height: int) -> bool:
+        if not height:
+            return True
+        bounds = info.get("bounds") or {}
+        top = int(bounds.get("top", 0))
+        bottom = int(bounds.get("bottom", 0))
+        if bottom <= top:
+            return False
+        center_y = (top + bottom) // 2
+        # Exclude search bar/filter chips/header tabs and bottom nav.
+        return int(height * 0.22) <= center_y <= int(height * 0.86)
+
+    def _selector_signature(self, info: dict) -> str:
+        bounds = info.get("bounds") or {}
+        text = str(info.get("text") or info.get("contentDescription") or "")[:120]
+        return f"{text}|{bounds}"
+
+    def _looks_like_open_profile(self) -> bool:
+        if self.target == "app":
+            try:
+                if self.d(resourceId=self.rid("profile_page")).exists(timeout=0.4):
+                    return True
+            except Exception:
+                pass
+            try:
+                xml = self._visible_hierarchy().lower()
+                if any(noise in xml for noise in ("show all results", "see all results", self.rid("results_list").lower())):
+                    return False
+                has_action = any(term in xml for term in ("connect", "follow", "message"))
+                has_profile_section = any(term in xml for term in ("about", "activity", "experience", "education"))
+                return has_action and has_profile_section
+            except Exception:
+                return False
+        return False
+
+    def _return_to_results_if_needed(self) -> None:
+        try:
+            if self._looks_like_open_profile():
+                self.d.press("back")
+                self.think(0.8, 1.5)
+            elif self._is_search_page_open(timeout=0.3):
+                return
+        except Exception:
+            pass
+
+    def _extract_people_result_candidates(self, search_query: str, page: int) -> list[Candidate]:
+        blocks = self._visible_result_text_blocks()
+        candidates: list[Candidate] = []
+        for sequence, window in enumerate(self._candidate_windows_from_blocks(blocks), start=1):
+            candidate = self.candidate_extractor.from_visible_text(
+                window,
+                search_query,
+                f"linkedin_people_results_page_{page}",
+                sequence,
+            )
+            if candidate:
+                candidate.additional_metadata["raw_visible_text"] = window[:500]
+                candidates.append(candidate)
+        return candidates
+
+    def _visible_result_text_blocks(self) -> list[str]:
+        blocks: list[str] = []
+        try:
+            for node in self.d(className="android.widget.TextView"):
+                info = node.info or {}
+                text = self._xml_unescape(str(info.get("text") or info.get("contentDescription") or ""))
+                if self._is_candidate_result_text(text):
+                    blocks.append(text)
+        except Exception:
+            pass
+        if not blocks:
+            xml = self._visible_hierarchy()
+            values = re.findall(r'text="([^"]+)"|content-desc="([^"]+)"', xml)
+            for left, right in values:
+                text = self._xml_unescape(left or right)
+                if self._is_candidate_result_text(text):
+                    blocks.append(text)
+        return self._dedupe_text_blocks(blocks)
+
+    def _is_candidate_result_text(self, text: str) -> bool:
+        clean = text.strip()
+        if len(clean) < 2 or len(clean) > 240:
+            return False
+        noise_exact = {
+            "home", "jobs", "my network", "notifications", "messaging", "search", "premium",
+            "posts", "companies", "groups", "events", "services", "schools", "courses",
+        }
+        if clean.lower() in noise_exact:
+            return False
+        return True
+
+    def _candidate_windows_from_blocks(self, blocks: list[str]) -> list[str]:
+        windows: list[str] = []
+        if not blocks:
+            return windows
+        for index in range(0, len(blocks), 3):
+            window = "\n".join(blocks[index : index + 5])
+            lowered = window.lower()
+            signals = ["1st", "2nd", "connect", "follow", "message", " at ", "followers", "connections"]
+            if any(signal in lowered for signal in signals):
+                windows.append(window)
+        if not windows:
+            joined = "\n".join(blocks[:8])
+            if joined.strip():
+                windows.append(joined)
+        return windows
+
+    def _safe_results_scroll_down(self) -> None:
+        try:
+            width, height = self.d.window_size()
+            x = int(width * 0.50)
+            self.d.swipe(x, int(height * 0.78), x, int(height * 0.34), duration=0.45)
+            time.sleep(0.5)
+        except Exception:
+            self._scroll_content_down()
+
+    def _apply_candidate_search_filters(self, search_query: str) -> None:
+        settings = self.config.get("candidate_discovery", {})
+        if self.target != "app" or not settings.get("apply_people_search_filters", True):
+            return
+        try:
+            if self._select_people_results_filter(search_query):
+                self.think(0.7, 1.5)
+            if settings.get("apply_connection_filters", True):
+                selected = self._select_connection_type_filters(search_query)
+                self.logger.log("candidate_search_filters", search_query, "applied", f"people=true,connections={','.join(selected) or 'none'}")
+            else:
+                self.logger.log("candidate_search_filters", search_query, "applied", "people=true,connections=disabled")
+        except Exception as exc:
+            self.logger.log("candidate_search_filters", search_query, "failed", repr(exc))
+
+    def _select_people_results_filter(self, search_query: str) -> bool:
+        selectors = [
+            self.d(text="People"),
+            self.d(textContains="People"),
+            self.d(description="People"),
+            self.d(descriptionContains="People"),
+        ]
+        for selector in selectors:
+            try:
+                if selector.exists(timeout=0.8):
+                    selector.click()
+                    self.logger.log("search_filter_people", search_query, "clicked", "selector")
+                    return True
+            except Exception:
+                pass
+        if self.config.get("candidate_discovery", {}).get("allow_coordinate_filter_fallbacks", False) or not self._is_real_linkedin_app():
+            try:
+                # Coordinate fallback is disabled by default on real LinkedIn to
+                # avoid random taps when the UI layout changes.
+                width, height = self.d.window_size()
+                for x_ratio in (0.18, 0.28, 0.38):
+                    self.d.click(int(width * x_ratio), int(height * 0.16))
+                    self.think(0.3, 0.8)
+                    if self.d(textContains="People").exists(timeout=0.2) or self.d(textContains="Connect").exists(timeout=0.2):
+                        self.logger.log("search_filter_people", search_query, "clicked", f"coordinate_x={x_ratio}")
+                        return True
+            except Exception:
+                pass
+        self.logger.log("search_filter_people", search_query, "not_found", "continuing")
+        return False
+
+    def _select_connection_type_filters(self, search_query: str) -> list[str]:
+        selected: list[str] = []
+        configured = [str(label) for label in self.config.get("candidate_discovery", {}).get("connection_filters", ["1st", "2nd"])]
+
+        # Some LinkedIn result layouts expose 1st/2nd as chips directly after
+        # tapping People. Select those first before trying the full filter sheet.
+        for label in configured:
+            if self._click_filter_option(label, timeout=0.35):
+                selected.append(label)
+                self.think(0.2, 0.6)
+        if selected:
+            self.logger.log("search_filter_connections", search_query, "clicked", f"direct={','.join(selected)}")
+            return selected
+
+        if not self._open_connection_filter_menu(search_query):
+            return selected
+        for label in configured:
+            if self._click_filter_option(label):
+                selected.append(label)
+                self.think(0.2, 0.6)
+            else:
+                self.logger.log("search_filter_option", search_query, "not_found", label)
+        if selected:
+            self._apply_open_filter_dialog(search_query)
+        else:
+            try:
+                self.d.press("back")
+                self.think(0.4, 0.9)
+            except Exception:
+                pass
+        return selected
+
+    def _open_connection_filter_menu(self, search_query: str) -> bool:
+        selectors = [
+            self.d(text="Connections"),
+            self.d(textContains="Connections"),
+            self.d(descriptionContains="Connections"),
+            self.d(text="Connection degree"),
+            self.d(textContains="Connection degree"),
+            self.d(descriptionContains="Connection degree"),
+            self.d(text="All filters"),
+            self.d(textContains="All filters"),
+            self.d(descriptionContains="All filters"),
+            self.d(text="Filters"),
+            self.d(textContains="Filters"),
+            self.d(descriptionContains="Filters"),
+        ]
+        for attempt in range(1, 3):
+            for selector in selectors:
+                try:
+                    if selector.exists(timeout=0.8):
+                        selector.click()
+                        self.think(0.6, 1.2)
+                        self.logger.log("search_filter_connections", search_query, "opened", f"selector_attempt={attempt}")
+                        return True
+                except Exception:
+                    pass
+            if attempt == 1:
+                self._horizontal_filter_chip_scroll()
+        if self.config.get("candidate_discovery", {}).get("allow_coordinate_filter_fallbacks", False) or not self._is_real_linkedin_app():
+            try:
+                width, height = self.d.window_size()
+                # Top filter chips often sit just below the search bar.
+                for x_ratio in (0.48, 0.62, 0.76):
+                    self.d.click(int(width * x_ratio), int(height * 0.16))
+                    self.think(0.5, 1.0)
+                    if self.d(textContains="1st").exists(timeout=0.3) or self.d(textContains="2nd").exists(timeout=0.3):
+                        self.logger.log("search_filter_connections", search_query, "opened", f"coordinate_x={x_ratio}")
+                        return True
+            except Exception:
+                pass
+        self.logger.log("search_filter_connections", search_query, "not_found", "continuing")
+        return False
+
+    def _horizontal_filter_chip_scroll(self) -> None:
+        try:
+            width, height = self.d.window_size()
+            y = int(height * 0.16)
+            self.d.swipe(int(width * 0.82), y, int(width * 0.28), y, duration=0.25)
+            self.think(0.3, 0.7)
+        except Exception:
+            pass
+
+    def _click_filter_option(self, label: str, timeout: float = 0.6) -> bool:
+        option_texts = [label, f"{label} connections", f"{label} degree", f"{label}-degree"]
+        selectors = []
+        for text in option_texts:
+            selectors.extend([self.d(text=text), self.d(description=text), self.d(textContains=text), self.d(descriptionContains=text)])
+        for attempt in range(1, 3):
+            for selector in selectors:
+                try:
+                    if selector.exists(timeout=timeout):
+                        selector.click()
+                        return True
+                except Exception:
+                    pass
+            if attempt == 1:
+                try:
+                    width, height = self.d.window_size()
+                    self.d.swipe(int(width * 0.72), int(height * 0.76), int(width * 0.72), int(height * 0.46), duration=0.25)
+                    self.think(0.3, 0.7)
+                except Exception:
+                    pass
+        return False
+
+    def _apply_open_filter_dialog(self, search_query: str) -> None:
+        for selector in [
+            self.d(text="Show results"),
+            self.d(textContains="Show results"),
+            self.d(text="Apply"),
+            self.d(textContains="Apply"),
+            self.d(descriptionContains="Show results"),
+            self.d(descriptionContains="Apply"),
+        ]:
+            try:
+                if selector.exists(timeout=0.7):
+                    selector.click()
+                    self.logger.log("search_filter_apply", search_query, "clicked", "selector")
+                    self.think(0.8, 1.5)
+                    return
+            except Exception:
+                pass
+        try:
+            self.d.press("back")
+            self.think(0.5, 1.0)
+        except Exception:
+            pass
+
     def _click_contact(self, name: str) -> bool:
         if self.target == "app":
             for attempt in range(1, 3):
@@ -1307,6 +2143,7 @@ class AndroidMockSiteDriver:
                             selector.click()
                             self.logger.log("search_show_all_results", name, "clicked", f"attempt={attempt}")
                             self.think(1.0, 2.0)
+                            self._apply_candidate_search_filters(name)
                             if self._click_visible_profile_result(name):
                                 return True
                     except Exception:
@@ -1326,17 +2163,18 @@ class AndroidMockSiteDriver:
                         pass
                     continue
 
-            # Last-resort native app fallback: tap likely result rows, not the
-            # profile banner/top-left avatar area.
-            try:
-                width, height = self.d.window_size()
-                for y_ratio in (0.32, 0.40, 0.48):
-                    self.d.click(int(width * random.uniform(0.30, 0.70)), int(height * y_ratio))
-                    self.think(0.6, 1.2)
-                    if self.d(resourceId=self.rid("profile_page")).exists(timeout=1.0):
-                        return True
-            except Exception:
-                pass
+            # Last-resort coordinate result taps are disabled on real LinkedIn;
+            # they caused accidental random clicks when result layouts shifted.
+            if not self._is_real_linkedin_app() or self.config.get("candidate_discovery", {}).get("allow_coordinate_result_fallbacks", False):
+                try:
+                    width, height = self.d.window_size()
+                    for y_ratio in (0.32, 0.40, 0.48):
+                        self.d.click(int(width * random.uniform(0.30, 0.70)), int(height * y_ratio))
+                        self.think(0.6, 1.2)
+                        if self.d(resourceId=self.rid("profile_page")).exists(timeout=1.0):
+                            return True
+                except Exception:
+                    pass
         return self._click_text(name)
 
     def _click_visible_profile_result(self, name: str) -> bool:
@@ -1353,10 +2191,8 @@ class AndroidMockSiteDriver:
         for selector in selectors:
             try:
                 if selector.exists(timeout=1.2):
-                    if self._looks_like_filter_or_search_control(selector):
-                        continue
                     self.think(0.2, 0.7)
-                    self._click_profile_result_selector(selector)
+                    selector.click()
                     self.think(0.7, 1.4)
                     if self.d(resourceId=self.rid("profile_page")).exists(timeout=1.0):
                         return True
@@ -1371,34 +2207,8 @@ class AndroidMockSiteDriver:
                 pass
         return False
 
-    def _looks_like_filter_or_search_control(self, selector) -> bool:
-        try:
-            info = selector.info or {}
-            label = self._xml_unescape(str(info.get("text") or info.get("contentDescription") or "")).strip().lower()
-            return label in {"1st", "2nd", "3rd", "people", "connections", "all filters", "show results", "apply", "search"}
-        except Exception:
-            return False
-
-    def _click_profile_result_selector(self, selector) -> None:
-        """Click the result row/card area instead of small filter/action text."""
-        try:
-            info = selector.info or {}
-            bounds = info.get("bounds") or {}
-            left = int(bounds.get("left", 0))
-            right = int(bounds.get("right", 0))
-            top = int(bounds.get("top", 0))
-            bottom = int(bounds.get("bottom", 0))
-            width, height = self.d.window_size()
-            if bottom > top:
-                x = max(int(width * 0.18), min(int(width * 0.62), left + int((right - left) * 0.35)))
-                y = max(int(height * 0.22), min(int(height * 0.84), (top + bottom) // 2))
-                self.d.click(x, y)
-                return
-        except Exception:
-            pass
-        selector.click()
-
     def _go_home(self) -> None:
+        self._guard_bottom_menu_before_step("go_home")
         if self.target == "app":
             try:
                 home = self.d(resourceId=self.rid("home_button"))
@@ -1410,8 +2220,9 @@ class AndroidMockSiteDriver:
                 pass
         self._click_text("Home")
         time.sleep(random.uniform(0.5, 1.2))
-        # Do not swipe down after Home. If the feed is already at the top this
-        # can trigger pull-to-refresh repeatedly.
+        for _ in range(random.randint(1, 2)):
+            self._human_swipe(direction="down")
+            time.sleep(random.uniform(0.25, 0.75))
 
     def _focus_search_box(self) -> bool:
         if self.target == "app":

@@ -1,0 +1,28 @@
+{
+  "search_queries": [
+    "founder",
+    "ceo startup",
+    "hr manager hiring"
+  ],
+  "candidate_scoring": {
+    "minimum_recommended_score": 75,
+    "strong_recommend_score": 85,
+    "title_keywords": ["founder", "ceo", "co-founder", "head", "vp", "manager", "director"],
+    "company_keywords": ["startup", "saas", "ai", "automation"],
+    "location_keywords": ["india", "united states", "remote"],
+    "positive_keywords": ["hiring", "growth", "b2b", "sales", "recruiting"],
+    "negative_keywords": ["student", "intern", "freelancer"],
+    "weights": {
+      "has_name": 10,
+      "has_profile_identity": 20,
+      "has_headline": 20,
+      "has_company": 10,
+      "has_connection_degree": 5,
+      "title_keyword_match": 25,
+      "company_keyword_match": 10,
+      "location_keyword_match": 10,
+      "positive_keyword_match": 10,
+      "negative_keyword_penalty": -25
+    }
+  }
+}
