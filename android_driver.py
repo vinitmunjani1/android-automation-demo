@@ -518,6 +518,13 @@ class AndroidMockSiteDriver:
             return True
         return self._is_real_home_tab_selected() and not any(term in low for term in non_home_terms)
 
+    def _is_home_feed_ready(self) -> bool:
+        if self.target != "app":
+            return True
+        if self._is_real_linkedin_app():
+            return self._is_real_home_context()
+        return self._current_mock_page_name() == "home_feed"
+
     def _is_real_home_tab_selected(self) -> bool:
         try:
             width, height = self.d.window_size()
@@ -536,7 +543,7 @@ class AndroidMockSiteDriver:
                     if center_y < int(height * 0.82) or center_x > int(width * 0.28):
                         continue
                     label = " ".join(str(info.get(key) or "") for key in ("text", "contentDescription")).lower()
-                    if info.get("selected") or info.get("checked") or "selected" in label:
+                    if info.get("selected") or info.get("checked") or any(term in label for term in ("selected", "active", "current")):
                         return True
                 except Exception:
                     pass
@@ -675,7 +682,10 @@ class AndroidMockSiteDriver:
         self._stuck_recovery_count += 1
         try:
             current = self._current_mock_page_name()
-            if current in {"home_feed", "network", "messages", "notifications", "unknown"} or (self._is_real_linkedin_app() and current != "search_results"):
+            if self._is_real_linkedin_app():
+                self._go_home()
+                method = "home_tab_no_back"
+            elif current in {"home_feed", "network", "messages", "notifications", "unknown"}:
                 self._go_home()
                 method = "home_tab"
             else:
@@ -776,11 +786,11 @@ class AndroidMockSiteDriver:
 
     def _scroll_feed_once(self, index: int) -> None:
         self._guard_bottom_menu_before_step(f"feed_{index}")
-        if self.target == "app" and self._current_mock_page_name() != "home_feed":
+        if self.target == "app" and not self._is_home_feed_ready():
             self._go_home()
             self.think(0.6, 1.2)
-            if self._current_mock_page_name() != "home_feed":
-                self.logger.log("current_page_guard", f"feed_{index}", "blocked", f"expected=home_feed,actual={self._current_mock_page_name()}")
+            if not self._is_home_feed_ready():
+                self.logger.log("current_page_guard", f"feed_{index}", "blocked", f"expected=home_feed,actual={self._current_mock_page_name()},home_ready={self._is_home_feed_ready()}")
                 return
 
         self.think(
@@ -956,6 +966,14 @@ class AndroidMockSiteDriver:
         if self.target != "app":
             return
         try:
+            if self._is_real_linkedin_app():
+                if self._is_home_feed_ready():
+                    self.logger.log("search_recovery", label, "skipped", "already_home_no_back")
+                    return
+                home_ok = self._go_home()
+                self.logger.log("search_recovery", label, "success" if home_ok else "not_confirmed", f"method=home_tab_no_back,current={self._current_mock_page_name()}")
+                return
+
             if not self._is_search_page_open(timeout=0.4):
                 if self._current_mock_page_name() != "home_feed":
                     self._go_home()
@@ -1184,8 +1202,8 @@ class AndroidMockSiteDriver:
         if self.target != "app":
             return False
         current_page = self._current_mock_page_name()
-        if current_page != "home_feed":
-            self.logger.log("feed_like_skipped", f"feed_{feed_index}", "not_home", f"page={current_page}")
+        if not self._is_home_feed_ready():
+            self.logger.log("feed_like_skipped", f"feed_{feed_index}", "not_home", f"page={current_page},home_ready={self._is_home_feed_ready()}")
             return False
 
         max_likes = int(self.config.get("max_feed_likes_per_run", 3))
@@ -1246,7 +1264,7 @@ class AndroidMockSiteDriver:
         return False
 
     def _visible_feed_post_like_targets(self) -> list[dict]:
-        if self.target != "app" or self._current_mock_page_name() != "home_feed":
+        if self.target != "app" or not self._is_home_feed_ready():
             return []
         targets: list[dict] = []
         seen: set[str] = set()
@@ -2397,6 +2415,9 @@ class AndroidMockSiteDriver:
 
     def _return_to_results_if_needed(self) -> None:
         try:
+            if self._is_real_linkedin_app() and self._is_home_feed_ready():
+                self.logger.log("return_to_results", self.target, "skipped", "already_home_no_back")
+                return
             if self._is_search_page_open(timeout=0.3):
                 return
             if self._looks_like_open_profile() or self._current_mock_page_name() == "profile":
@@ -2535,6 +2556,9 @@ class AndroidMockSiteDriver:
             self._apply_open_filter_dialog(search_query)
             self.logger.log("search_filter_connections", search_query, "cleared", f"menu={','.join(cleared)}")
         else:
+            if self._is_real_linkedin_app():
+                self.logger.log("search_filter_connections", search_query, "clear_skipped", "selected_filters_not_found_no_back")
+                return cleared
             try:
                 self.d.press("back")
                 self.think(0.4, 0.9)
@@ -2643,6 +2667,9 @@ class AndroidMockSiteDriver:
         if selected:
             self._apply_open_filter_dialog(search_query)
         else:
+            if self._is_real_linkedin_app():
+                self.logger.log("search_filter_connections", search_query, "not_found", "no_options_selected_no_back")
+                return selected
             try:
                 self.d.press("back")
                 self.think(0.4, 0.9)
@@ -2784,6 +2811,9 @@ class AndroidMockSiteDriver:
             except Exception:
                 pass
         try:
+            if self._is_real_linkedin_app():
+                self.logger.log("search_filter_apply", search_query, "skipped", "apply_not_found_no_back")
+                return
             self.d.press("back")
             self.think(0.5, 1.0)
         except Exception:
@@ -2890,18 +2920,21 @@ class AndroidMockSiteDriver:
 
     def _go_home(self) -> bool:
         if self.target == "app":
+            if self._is_real_linkedin_app() and self._is_home_feed_ready():
+                self.logger.log("home", self.target, "success", "already_home")
+                return True
             for attempt in range(1, 4):
                 self._reveal_bottom_nav()
                 if self._tap_home_tab():
                     self.think(0.6, 1.2)
-                    if self._current_mock_page_name() == "home_feed":
+                    if self._is_home_feed_ready():
                         return True
                 # If a profile/search overlay swallowed the Home tap, back out
                 # once and retry against the bottom nav. Avoid swipe-down here;
                 # it can trigger refresh or scroll the wrong page.
                 try:
                     current = self._current_mock_page_name()
-                    if current in {"search_results", "search"} or (current == "profile" and not self._is_real_linkedin_app()):
+                    if not self._is_real_linkedin_app() and (current in {"search_results", "search"} or current == "profile"):
                         self.d.press("back")
                         self.think(0.5, 1.0)
                 except Exception:
@@ -2933,7 +2966,7 @@ class AndroidMockSiteDriver:
             for x_ratio in (0.10, 0.12, 0.08):
                 self.d.click(int(width * x_ratio), int(height * 0.955))
                 self.think(0.4, 0.8)
-                if self._current_mock_page_name() == "home_feed":
+                if self._is_home_feed_ready() or (self._is_real_linkedin_app() and self._is_bottom_menu_visible()):
                     return True
         except Exception:
             pass
