@@ -2529,8 +2529,13 @@ class AndroidMockSiteDriver:
                 self.logger.log("candidate_search_fallback", search_query, "failed", f"not_on_results,current={self._current_mock_page_name()}")
                 return False
             self._open_all_search_results(search_query)
-            self._apply_candidate_search_filters(search_query, include_connections=False)
+            # We only enter this fallback after the normal People + connection
+            # filter path returned no usable profiles, so People is already the
+            # active vertical. Clicking the People chip again opens LinkedIn's
+            # "Filter by" bottom sheet and can leave the run stuck behind it.
+            self._ensure_filter_sheet_closed(search_query)
             cleared = self._clear_connection_type_filters(search_query)
+            self._ensure_filter_sheet_closed(search_query)
             self._wait_for_profile_results(search_query)
             self._log_ui_snapshot("fallback_after_profile_only", search_query)
             self.logger.log("candidate_search_fallback", search_query, "applied", f"profile_filter_only,cleared={','.join(cleared) or 'none'}")
@@ -2547,11 +2552,15 @@ class AndroidMockSiteDriver:
         # near the top filter row. Only tap those top chips; broad textContains
         # matches can hit "1st/2nd" badges inside profile rows.
         for label in configured:
-            if self._click_top_filter_chip(label, timeout=0.25):
+            if self._click_selected_top_filter_chip(label, timeout=0.35):
                 cleared.append(label)
                 self.think(0.25, 0.7)
         if cleared:
             self.logger.log("search_filter_connections", search_query, "cleared", f"direct={','.join(cleared)}")
+            return cleared
+
+        if self._is_real_linkedin_app():
+            self.logger.log("search_filter_connections", search_query, "clear_skipped", "no_selected_top_connection_chips")
             return cleared
 
         if not self._open_connection_filter_menu(search_query):
@@ -2610,6 +2619,7 @@ class AndroidMockSiteDriver:
         try:
             if self._select_people_results_filter(search_query):
                 self.think(0.7, 1.5)
+                self._ensure_filter_sheet_closed(search_query)
             if include_connections and settings.get("apply_connection_filters", True):
                 selected = self._select_connection_type_filters(search_query)
                 self.logger.log("candidate_search_filters", search_query, "applied", f"people=true,connections={','.join(selected) or 'none'}")
@@ -2750,6 +2760,36 @@ class AndroidMockSiteDriver:
                 pass
         return False
 
+    def _click_selected_top_filter_chip(self, label: str, timeout: float = 0.5) -> bool:
+        option_texts = [label, f"{label} connections", f"{label} degree", f"{label}-degree"]
+        selectors = []
+        for text in option_texts:
+            selectors.extend([self.d(text=text), self.d(description=text), self.d(textContains=text), self.d(descriptionContains=text)])
+        for selector in selectors:
+            try:
+                if not selector.exists(timeout=timeout) or not self._selector_is_top_filter_chip(selector):
+                    continue
+                if not self._selector_looks_selected(selector):
+                    self.logger.log("search_filter_connections", label, "skip_unselected_top_chip", "not_selected")
+                    continue
+                selector.click()
+                return True
+            except Exception:
+                pass
+        return False
+
+    def _selector_looks_selected(self, selector) -> bool:
+        try:
+            info = selector.info or {}
+            if info.get("selected") or info.get("checked"):
+                return True
+            label = " ".join(str(info.get(key) or "") for key in ("text", "contentDescription")).lower()
+            if "not selected" in label or "unselected" in label:
+                return False
+            return "selected" in label or "currently selected" in label
+        except Exception:
+            return False
+
     def _selector_is_top_filter_chip(self, selector) -> bool:
         try:
             info = selector.info or {}
@@ -2802,7 +2842,16 @@ class AndroidMockSiteDriver:
                     pass
         return False
 
-    def _apply_open_filter_dialog(self, search_query: str) -> None:
+    def _is_filter_bottom_sheet_open(self) -> bool:
+        low = self._visible_hierarchy().lower()
+        return "filter by" in low or ("show results" in low and "companies" in low and "schools" in low)
+
+    def _ensure_filter_sheet_closed(self, search_query: str) -> bool:
+        if not self._is_filter_bottom_sheet_open():
+            return True
+        return self._apply_open_filter_dialog(search_query)
+
+    def _apply_open_filter_dialog(self, search_query: str) -> bool:
         for selector in [
             self.d(text="Show results"),
             self.d(textContains="Show results"),
@@ -2816,17 +2865,29 @@ class AndroidMockSiteDriver:
                     selector.click()
                     self.logger.log("search_filter_apply", search_query, "clicked", "selector")
                     self.think(0.8, 1.5)
-                    return
+                    return not self._is_filter_bottom_sheet_open()
             except Exception:
                 pass
+        if self._is_real_linkedin_app() and self._is_filter_bottom_sheet_open():
+            try:
+                width, height = self.d.window_size()
+                self.d.click(int(width * 0.50), int(height * 0.94))
+                self.think(0.8, 1.5)
+                closed = not self._is_filter_bottom_sheet_open()
+                self.logger.log("search_filter_apply", search_query, "clicked" if closed else "not_confirmed", "bottom_button_coordinate")
+                return closed
+            except Exception as exc:
+                self.logger.log("search_filter_apply", search_query, "failed", f"bottom_button_coordinate={exc!r}")
+                return False
         try:
             if self._is_real_linkedin_app():
                 self.logger.log("search_filter_apply", search_query, "skipped", "apply_not_found_no_back")
-                return
+                return False
             self.d.press("back")
             self.think(0.5, 1.0)
         except Exception:
             pass
+        return not self._is_filter_bottom_sheet_open()
 
     def _click_contact(self, name: str) -> bool:
         if self.target == "app":
