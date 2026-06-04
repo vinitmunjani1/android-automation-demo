@@ -412,6 +412,9 @@ class AndroidMockSiteDriver:
         hidden or the app is mid-transition. The hierarchy string is more useful
         for deciding where the bot actually is before taking an action.
         """
+        if self.target == "app" and self._is_real_linkedin_app():
+            return self._current_real_linkedin_page_name()
+
         xml = self._visible_hierarchy()
         low = xml.lower()
         rid = self.rid
@@ -454,6 +457,36 @@ class AndroidMockSiteDriver:
                     return name
             except Exception:
                 pass
+        return "unknown"
+
+    def _current_real_linkedin_page_name(self) -> str:
+        """Classify real LinkedIn screens without treating bottom-nav labels as pages."""
+        xml = self._visible_hierarchy()
+        low = xml.lower()
+
+        if any(term in low for term in ("show all results", "see all results", "search results", "people results")):
+            return "search_results"
+
+        # Profile pages have both profile actions and sections. Avoid generic
+        # bottom-nav/profile labels, which can appear on Home.
+        has_profile_action = any(term in low for term in ("connect", "follow", "message"))
+        has_profile_section = any(term in low for term in ("about", "activity", "experience", "education"))
+        if has_profile_action and has_profile_section:
+            return "profile"
+
+        if any(term in low for term in ("people you may know", "manage my network", "invitations", "grow your network")):
+            return "network"
+        if any(term in low for term in ("search messages", "conversations", "new message")):
+            return "messages"
+        if any(term in low for term in ("notification", "notifications")) and any(term in low for term in ("reacted", "viewed", "mentioned", "posted")):
+            return "notifications"
+        if any(term in low for term in ("start a post", "start a professional update", "share your thoughts")):
+            return "home_feed"
+
+        # If only the bottom nav gives us signal, default to Home instead of
+        # misclassifying based on labels like My Network/Profile in the nav bar.
+        if self._is_bottom_menu_visible():
+            return "home_feed"
         return "unknown"
 
     def _is_bottom_menu_visible(self) -> bool:
@@ -503,7 +536,29 @@ class AndroidMockSiteDriver:
         if self._is_bottom_menu_visible():
             return
         max_backs = int(settings.get("max_back_presses", 2))
-        self.logger.log("bottom_menu_guard", label, "missing", f"back_presses={max_backs}")
+        self.logger.log("bottom_menu_guard", label, "missing", f"back_presses={max_backs},safe_reveal_first=true")
+
+        # First try non-destructive recovery. On real LinkedIn, pressing Back on
+        # Home closes the app, so reveal/tap Home before considering Back.
+        for attempt in range(1, 3):
+            self._reveal_bottom_nav()
+            if self._is_bottom_menu_visible():
+                self.logger.log("bottom_menu_guard", label, "recovered", f"method=reveal,attempt={attempt}")
+                return
+            if self._tap_home_tab():
+                self.think(0.4, 0.9)
+                if self._is_bottom_menu_visible() or self._current_mock_page_name() == "home_feed":
+                    self.logger.log("bottom_menu_guard", label, "recovered", f"method=home_tab,attempt={attempt}")
+                    return
+
+        current = self._current_mock_page_name()
+        if self._is_real_linkedin_app():
+            self.logger.log("bottom_menu_guard", label, "still_missing", f"no_back_on_real_linkedin,current={current}")
+            return
+        if current in {"home_feed", "network", "messages", "notifications", "unknown"}:
+            self.logger.log("bottom_menu_guard", label, "still_missing", f"no_back_on_root_like_page,current={current}")
+            return
+
         for attempt in range(1, max_backs + 1):
             try:
                 self.d.press("back")
@@ -517,7 +572,7 @@ class AndroidMockSiteDriver:
             except Exception as exc:
                 self.logger.log("bottom_menu_guard", label, "failed", repr(exc))
                 return
-        self.logger.log("bottom_menu_guard", label, "still_missing", "continuing_cautiously")
+        self.logger.log("bottom_menu_guard", label, "still_missing", f"continuing_without_extra_back,current={current}")
 
     def _ensure_current_page(self, expected: str, label: str) -> bool:
         current = self._current_mock_page_name()
@@ -528,16 +583,22 @@ class AndroidMockSiteDriver:
         return False
 
     def _recover_from_stuck_page(self, label: str) -> None:
-        """Escape a stuck UI state by simply pressing Back once."""
+        """Escape a stuck UI state without closing the app from Home."""
         self._stuck_recovery_count += 1
         try:
-            self.d.press("back")
-            self.think(0.6, 1.2)
+            current = self._current_mock_page_name()
+            if current in {"home_feed", "network", "messages", "notifications", "unknown"} or (self._is_real_linkedin_app() and current != "search_results"):
+                self._go_home()
+                method = "home_tab"
+            else:
+                self.d.press("back")
+                self.think(0.6, 1.2)
+                method = "back"
             self.logger.log(
                 "stuck_page_recovery",
                 label,
                 "success",
-                f"method=back,total_recoveries={self._stuck_recovery_count}",
+                f"method={method},from={current},total_recoveries={self._stuck_recovery_count}",
             )
         except Exception as exc:
             self.logger.log("stuck_page_recovery", label, "failed", repr(exc))
@@ -2501,9 +2562,9 @@ class AndroidMockSiteDriver:
         return False
 
     def _go_home(self) -> bool:
-        self._guard_bottom_menu_before_step("go_home")
         if self.target == "app":
             for attempt in range(1, 4):
+                self._reveal_bottom_nav()
                 if self._tap_home_tab():
                     self.think(0.6, 1.2)
                     if self._current_mock_page_name() == "home_feed":
@@ -2512,7 +2573,8 @@ class AndroidMockSiteDriver:
                 # once and retry against the bottom nav. Avoid swipe-down here;
                 # it can trigger refresh or scroll the wrong page.
                 try:
-                    if self._current_mock_page_name() in {"profile", "search_results", "search"}:
+                    current = self._current_mock_page_name()
+                    if current in {"search_results", "search"} or (current == "profile" and not self._is_real_linkedin_app()):
                         self.d.press("back")
                         self.think(0.5, 1.0)
                 except Exception:
@@ -2534,7 +2596,7 @@ class AndroidMockSiteDriver:
         ]
         for selector in selectors:
             try:
-                if selector.exists(timeout=0.6):
+                if selector.exists(timeout=0.6) and (not self._is_real_linkedin_app() or self._selector_is_bottom_nav_item(selector)):
                     selector.click()
                     return True
             except Exception:
@@ -2549,6 +2611,23 @@ class AndroidMockSiteDriver:
         except Exception:
             pass
         return False
+
+    def _selector_is_bottom_nav_item(self, selector) -> bool:
+        try:
+            info = selector.info or {}
+            bounds = info.get("bounds") or {}
+            width, height = self.d.window_size()
+            top = int(bounds.get("top", 0))
+            bottom = int(bounds.get("bottom", 0))
+            left = int(bounds.get("left", 0))
+            right = int(bounds.get("right", 0))
+            if bottom <= top or right <= left:
+                return False
+            center_y = (top + bottom) // 2
+            center_x = (left + right) // 2
+            return center_y >= int(height * 0.82) and int(width * 0.00) <= center_x <= int(width * 0.28)
+        except Exception:
+            return False
 
     def _focus_search_box(self) -> bool:
         if self.target == "app":
