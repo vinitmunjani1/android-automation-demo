@@ -309,9 +309,10 @@ class AndroidMockSiteDriver:
         last_action = ""
         repeated = 0
         for step in range(1, action_count + 1):
-            self._guard_bottom_menu_before_step(f"step_{step}_pre_action")
+            real_linkedin = self._is_real_linkedin_app()
+            if not real_linkedin:
+                self._guard_bottom_menu_before_step(f"step_{step}_pre_action")
             choices = ["pause", "home"]
-            real_linkedin = self.app_package == self.config.get("linkedin_app_package", "com.linkedin.android")
             if remaining_contacts:
                 choices.extend(["profile_finder", "profile_finder", "profile_finder"])
             if not real_linkedin:
@@ -501,22 +502,25 @@ class AndroidMockSiteDriver:
 
     def _is_real_home_context(self, low_xml: str | None = None) -> bool:
         low = low_xml if low_xml is not None else self._visible_hierarchy().lower()
+        search_overlay_terms = (
+            "show all results",
+            "see all results",
+            "all filters",
+            "connection degree",
+            "search results",
+            "people results",
+        )
         explicit_home_terms = (
             "start a post",
             "start a professional update",
             "share your thoughts",
             "what do you want to talk about",
         )
-        if any(term in low for term in explicit_home_terms):
+        if any(term in low for term in explicit_home_terms) and not any(term in low for term in search_overlay_terms):
             return True
-        non_home_terms = (
-            "show all results", "see all results", "all filters", "connection degree",
-            "people you may know", "manage my network", "invitations", "grow your network",
-            "search messages", "conversations", "notification", "notifications",
-        )
-        if "recommended for you" in low and not any(term in low for term in non_home_terms):
+        if "recommended for you" in low and not any(term in low for term in search_overlay_terms):
             return True
-        return self._is_real_home_tab_selected() and not any(term in low for term in non_home_terms)
+        return self._is_real_home_tab_selected() and not any(term in low for term in search_overlay_terms)
 
     def _is_home_feed_ready(self) -> bool:
         if self.target != "app":
@@ -568,17 +572,19 @@ class AndroidMockSiteDriver:
 
     def _has_real_profile_signal(self, low_xml: str | None = None) -> bool:
         low = low_xml if low_xml is not None else self._visible_hierarchy().lower()
+        if self._is_real_linkedin_app() and self._is_real_home_context(low):
+            return False
+        if any(noise in low for noise in ("show all results", "see all results", self.rid("results_list").lower())):
+            return False
         action_terms = ("connect", "follow", "message", "more")
-        section_terms = ("about", "activity", "experience", "education", "contact info", "open to", "featured", "posts")
-        headline_terms = ("followers", "connections", "mutual", "top voice", "creator mode")
+        section_terms = ("about", "experience", "education", "contact info", "open to", "featured")
+        headline_terms = ("followers", "mutual", "top voice", "creator mode")
         has_action = any(term in low for term in action_terms)
         has_section = any(term in low for term in section_terms)
         has_headline = any(term in low for term in headline_terms)
         strong_profile = (has_action and (has_section or has_headline)) or (has_section and has_headline)
         if strong_profile:
             return True
-        if any(noise in low for noise in ("show all results", "see all results", self.rid("results_list").lower())):
-            return False
         return False
 
     def _is_bottom_menu_visible(self) -> bool:
@@ -785,13 +791,13 @@ class AndroidMockSiteDriver:
         self.action_transition_pause()
 
     def _scroll_feed_once(self, index: int) -> None:
-        self._guard_bottom_menu_before_step(f"feed_{index}")
         if self.target == "app" and not self._is_home_feed_ready():
             self._go_home()
             self.think(0.6, 1.2)
             if not self._is_home_feed_ready():
                 self.logger.log("current_page_guard", f"feed_{index}", "blocked", f"expected=home_feed,actual={self._current_mock_page_name()},home_ready={self._is_home_feed_ready()}")
                 return
+        self._guard_bottom_menu_before_step(f"feed_{index}")
 
         self.think(
             float(self.human.get("feed_read_min_seconds", 1.8)),
@@ -2224,6 +2230,7 @@ class AndroidMockSiteDriver:
         pages = int(settings.get("result_collection_pages", 4))
         max_profiles = int(settings.get("max_profiles_to_open_per_query", settings.get("max_candidates_per_query", 25)))
         opened = 0
+        scored = 0
         seen_signatures: set[str] = set()
         no_progress = 0
         previous_page_signature = ""
@@ -2234,7 +2241,7 @@ class AndroidMockSiteDriver:
             page_opened = 0
             for target in candidates:
                 if opened >= max_profiles:
-                    return opened
+                    return scored
                 try:
                     signature = str(target.get("signature") or "")
                     if signature in seen_signatures:
@@ -2242,8 +2249,9 @@ class AndroidMockSiteDriver:
                     seen_signatures.add(signature)
                     self.d.click(int(target["x"]), int(target["y"]))
                     self.think(1.2, 2.2)
-                    if not self._looks_like_open_profile():
-                        self.logger.log("candidate_profile_open", search_query, "skipped", "click_did_not_open_profile")
+                    current_after_click = self._current_mock_page_name()
+                    if current_after_click != "profile" or self._is_search_page_open(timeout=0.2):
+                        self.logger.log("candidate_profile_open", search_query, "skipped", f"click_did_not_open_profile,current={current_after_click}")
                         self._return_to_results_if_needed()
                         continue
                     scored_candidate = self._score_open_profile_candidate(search_query)
@@ -2253,7 +2261,8 @@ class AndroidMockSiteDriver:
                     else:
                         self._maybe_connect_scored_profile(scored_candidate, search_query)
                         page_opened += 1
-                        self.logger.log("candidate_profile_open", search_query, "scored", f"opened={opened},page={page}")
+                        scored += 1
+                        self.logger.log("candidate_profile_open", search_query, "scored", f"opened={opened},scored={scored},page={page}")
                     self._return_to_results_if_needed()
                     self.think(0.6, 1.2)
                 except Exception as exc:
@@ -2270,7 +2279,7 @@ class AndroidMockSiteDriver:
             previous_page_signature = page_signature
             self._safe_results_scroll_down()
             self.think(0.8, 1.6)
-        return opened
+        return scored
 
     def _visible_profile_result_selectors(self):
         if self._is_real_linkedin_app() and self._is_real_home_context():
@@ -2934,7 +2943,12 @@ class AndroidMockSiteDriver:
                 # it can trigger refresh or scroll the wrong page.
                 try:
                     current = self._current_mock_page_name()
-                    if not self._is_real_linkedin_app() and (current in {"search_results", "search"} or current == "profile"):
+                    if self._is_real_linkedin_app() and current == "search_results" and not self._is_home_feed_ready():
+                        self.d.press("back")
+                        self.think(0.7, 1.3)
+                        if self._is_home_feed_ready():
+                            return True
+                    elif not self._is_real_linkedin_app() and (current in {"search_results", "search"} or current == "profile"):
                         self.d.press("back")
                         self.think(0.5, 1.0)
                 except Exception:
