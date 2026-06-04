@@ -189,7 +189,8 @@ class CandidateExtractor:
         clean = re.sub(r"\s+", " ", text).strip()
         if not clean or len(clean) < 3:
             return None
-        fragments = [part.strip() for part in re.split(r"\s{2,}|\n|•", text) if part.strip()]
+        fragments = [self._clean_fragment(part) for part in re.split(r"\s{2,}|\n|•", text) if part.strip()]
+        fragments = [part for part in fragments if part]
         name = fragments[0] if fragments else clean[:80]
         headline = None
         company = None
@@ -215,6 +216,12 @@ class CandidateExtractor:
         candidate.score = self.scorer.score(candidate)
         candidate.additional_metadata["recommendation"] = self.scorer.recommendation_label(candidate.score)
         return candidate
+
+    def _clean_fragment(self, value: str) -> str:
+        clean = re.sub(r"\s+", " ", value).strip()
+        clean = re.sub(r"^(person result|open profile|network suggestion)\s+", "", clean, flags=re.IGNORECASE).strip()
+        clean = re.sub(r"^(connect|follow|message)\s+", "", clean, flags=re.IGNORECASE).strip()
+        return clean
 
     def _value(self, source: Any, key: str) -> Any:
         if isinstance(source, dict):
@@ -315,7 +322,8 @@ class SearchResultNavigator:
     def discover(self, search_query: str, state: dict[str, Any]) -> list[Candidate]:
         self.logger.log("candidate_search_start", search_query, "started", f"resume_state={bool(state)}")
         candidates = list(self.driver.discover_candidates_for_query(search_query, state))
-        self.logger.log("candidate_search_end", search_query, "success", f"visible_candidates={len(candidates)}")
+        status = "success" if candidates else "empty"
+        self.logger.log("candidate_search_end", search_query, status, f"visible_candidates={len(candidates)}")
         return candidates
 
 
@@ -337,7 +345,8 @@ class CandidateDiscoveryService:
             run.candidates = self.deduplicator.merge(run.candidates, discovered)
             run.state.update({"last_search_query": search_query, "last_saved_at": utc_now(), "candidate_count": len(run.candidates)})
             self.persistence.save(run, run_path)
-            self.logger.log("candidate_discovery_saved", str(run_path), "success", f"candidates={len(run.candidates)}")
+            status = "success" if run.candidates else "empty"
+            self.logger.log("candidate_discovery_saved", str(run_path), status, f"candidates={len(run.candidates)}")
             return run
         except KeyboardInterrupt:
             run.state.update({"interrupted_at": utc_now()})

@@ -43,7 +43,7 @@ class AndroidMockSiteDriver:
         self.config = config
         self.human = config.get("humanization", {})
         self.target = config.get("android_target", "web")
-        self.app_package = config.get("mock_app_package", "com.mockin.app")
+        self.app_package = config.get("android_app_package", config.get("mock_app_package", "com.mockin.app"))
         self.logger = logger
         self.candidate_extractor = CandidateExtractor(CandidateScorer(config))
         self._candidate_deduplicator = CandidateDeduplicator()
@@ -111,8 +111,8 @@ class AndroidMockSiteDriver:
                 collected = self._collect_and_score_visible_search_results(contact.name)
                 if collected == 0 and self._retry_search_with_profile_filter_only(contact.name):
                     collected = self._collect_and_score_visible_search_results(contact.name)
-                    self.logger.log("candidate_results_profile_only_retry", contact.name, "success", f"candidates={collected}")
-                self.logger.log("candidate_results_ranked", contact.name, "success", f"candidates={collected}")
+                    self.logger.log("candidate_results_profile_only_retry", contact.name, "success" if collected else "empty", f"candidates={collected}")
+                self.logger.log("candidate_results_ranked", contact.name, "success" if collected else "empty", f"candidates={collected}")
                 if collected == 0:
                     self._leave_search_page(contact.name)
                 self.action_transition_pause()
@@ -176,6 +176,10 @@ class AndroidMockSiteDriver:
         self.logger.log("candidate_search", search_query, "success", "typed_humanized=true,verified=true")
         self.think(1.2, 2.8)
 
+        self._open_all_search_results(search_query)
+        self._apply_candidate_search_filters(search_query)
+        self._wait_for_profile_results(search_query)
+
         discovery_config = self.config.get("candidate_discovery", {})
         max_candidates = int(discovery_config.get("max_candidates_per_query", 25))
         max_scrolls = int(discovery_config.get("max_scrolls_per_query", 8))
@@ -237,15 +241,20 @@ class AndroidMockSiteDriver:
                 try:
                     if not selector.exists(timeout=0.2):
                         continue
-                    sequence += 1
-                    info = selector.info or {}
-                    text = "\n".join(str(info.get(key) or "") for key in ("text", "contentDescription"))
-                    if not text.strip():
-                        text = self._visible_hierarchy()
-                    candidate = self.candidate_extractor.from_visible_text(text, search_query, f"mock_app_search_page_{page_index}", sequence)
-                    if candidate:
-                        candidate.additional_metadata.update({"driver_mode": "android", "target": self.target})
-                        candidates.append(candidate)
+                    try:
+                        nodes = list(selector) or [selector]
+                    except Exception:
+                        nodes = [selector]
+                    for node in nodes:
+                        sequence += 1
+                        info = node.info or {}
+                        text = "\n".join(str(info.get(key) or "") for key in ("text", "contentDescription"))
+                        if not text.strip():
+                            continue
+                        candidate = self.candidate_extractor.from_visible_text(text, search_query, f"mock_app_search_page_{page_index}", sequence)
+                        if candidate:
+                            candidate.additional_metadata.update({"driver_mode": "android", "target": self.target})
+                            candidates.append(candidate)
                 except Exception as exc:
                     self.logger.log("candidate_extract_card", search_query, "failed", repr(exc))
 
@@ -464,14 +473,12 @@ class AndroidMockSiteDriver:
         xml = self._visible_hierarchy()
         low = xml.lower()
 
-        if any(term in low for term in ("show all results", "see all results", "search results", "people results")):
+        if self._has_results_or_typeahead_signal(low):
             return "search_results"
 
         # Profile pages have both profile actions and sections. Avoid generic
         # bottom-nav/profile labels, which can appear on Home.
-        has_profile_action = any(term in low for term in ("connect", "follow", "message"))
-        has_profile_section = any(term in low for term in ("about", "activity", "experience", "education"))
-        if has_profile_action and has_profile_section:
+        if self._has_real_profile_signal(low):
             return "profile"
 
         if any(term in low for term in ("people you may know", "manage my network", "invitations", "grow your network")):
@@ -480,14 +487,66 @@ class AndroidMockSiteDriver:
             return "messages"
         if any(term in low for term in ("notification", "notifications")) and any(term in low for term in ("reacted", "viewed", "mentioned", "posted")):
             return "notifications"
-        if any(term in low for term in ("start a post", "start a professional update", "share your thoughts")):
+        if any(term in low for term in ("start a post", "start a professional update", "share your thoughts", "what do you want to talk about")):
+            return "home_feed"
+        if self._is_real_home_tab_selected():
             return "home_feed"
 
-        # If only the bottom nav gives us signal, default to Home instead of
-        # misclassifying based on labels like My Network/Profile in the nav bar.
-        if self._is_bottom_menu_visible():
-            return "home_feed"
         return "unknown"
+
+    def _is_real_home_tab_selected(self) -> bool:
+        try:
+            width, height = self.d.window_size()
+            for selector in [self.d(descriptionContains="Home"), self.d(text="Home"), self.d(textContains="Home")]:
+                try:
+                    if not selector.exists(timeout=0.1):
+                        continue
+                    info = selector.info or {}
+                    bounds = info.get("bounds") or {}
+                    top = int(bounds.get("top", 0))
+                    bottom = int(bounds.get("bottom", 0))
+                    left = int(bounds.get("left", 0))
+                    right = int(bounds.get("right", 0))
+                    center_y = (top + bottom) // 2 if bottom > top else 0
+                    center_x = (left + right) // 2 if right > left else 0
+                    if center_y < int(height * 0.82) or center_x > int(width * 0.28):
+                        continue
+                    label = " ".join(str(info.get(key) or "") for key in ("text", "contentDescription")).lower()
+                    if info.get("selected") or info.get("checked") or "selected" in label:
+                        return True
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        return False
+
+    def _has_results_or_typeahead_signal(self, low_xml: str | None = None) -> bool:
+        low = low_xml if low_xml is not None else self._visible_hierarchy().lower()
+        if any(term in low for term in ("show all results", "see all results", "search results", "people results")):
+            return True
+        if any(self.rid(name).lower() in low for name in ("results_list", "person_result")):
+            return True
+        has_filter_context = any(term in low for term in ("all filters", "connection degree", "people"))
+        has_connection_chip = any(term in low for term in ("1st", "2nd", "3rd"))
+        has_row_action = any(term in low for term in ("connect", "follow", "message"))
+        if has_filter_context and has_connection_chip and has_row_action:
+            return True
+        return False
+
+    def _has_real_profile_signal(self, low_xml: str | None = None) -> bool:
+        low = low_xml if low_xml is not None else self._visible_hierarchy().lower()
+        action_terms = ("connect", "follow", "message", "more")
+        section_terms = ("about", "activity", "experience", "education", "contact info", "open to", "featured", "posts")
+        headline_terms = ("followers", "connections", "mutual", "top voice", "creator mode")
+        has_action = any(term in low for term in action_terms)
+        has_section = any(term in low for term in section_terms)
+        has_headline = any(term in low for term in headline_terms)
+        strong_profile = (has_action and (has_section or has_headline)) or (has_section and has_headline)
+        if strong_profile:
+            return True
+        if any(noise in low for noise in ("show all results", "see all results", self.rid("results_list").lower())):
+            return False
+        return False
 
     def _is_bottom_menu_visible(self) -> bool:
         if self.target != "app":
@@ -495,10 +554,13 @@ class AndroidMockSiteDriver:
         try:
             xml = self._visible_hierarchy().lower()
             bottom_markers = [
+                self.rid("home_button").lower(),
                 self.rid("home_tab").lower(),
                 self.rid("network_tab").lower(),
                 self.rid("messages_button").lower(),
+                self.rid("messages_tab").lower(),
                 self.rid("notifications_button").lower(),
+                self.rid("notifications_tab").lower(),
             ]
             if any(marker in xml for marker in bottom_markers):
                 return True
@@ -641,8 +703,8 @@ class AndroidMockSiteDriver:
             collected = self._collect_and_score_visible_search_results(contact.name)
             if collected == 0 and self._retry_search_with_profile_filter_only(contact.name):
                 collected = self._collect_and_score_visible_search_results(contact.name)
-                self.logger.log("candidate_results_profile_only_retry", contact.name, "success", f"candidates={collected}")
-            self.logger.log("candidate_results_ranked", contact.name, "success", f"candidates={collected}")
+                self.logger.log("candidate_results_profile_only_retry", contact.name, "success" if collected else "empty", f"candidates={collected}")
+            self.logger.log("candidate_results_ranked", contact.name, "success" if collected else "empty", f"candidates={collected}")
             if collected == 0:
                 self._leave_search_page(contact.name)
             self.action_transition_pause()
@@ -846,12 +908,13 @@ class AndroidMockSiteDriver:
 
     def _is_search_page_open(self, timeout: float = 0.5) -> bool:
         try:
-            return (
-                self.d(resourceId=self.rid("results_list")).exists(timeout=timeout)
-                or self.d(resourceId=self.rid("search_input")).exists(timeout=0.2)
-                or self.d(textContains="Show all results").exists(timeout=0.2)
-                or self.d(textContains="See all results").exists(timeout=0.2)
-            )
+            if self.d(resourceId=self.rid("results_list")).exists(timeout=timeout):
+                return True
+            if self.d(resourceId=self.rid("person_result")).exists(timeout=0.2):
+                return True
+            if self.d(textContains="Show all results").exists(timeout=0.2) or self.d(textContains="See all results").exists(timeout=0.2):
+                return True
+            return self._has_results_or_typeahead_signal()
         except Exception:
             return False
 
@@ -860,12 +923,22 @@ class AndroidMockSiteDriver:
         if self.target != "app":
             return
         try:
+            if not self._is_search_page_open(timeout=0.4):
+                if self._current_mock_page_name() != "home_feed":
+                    self._go_home()
+                self.logger.log("search_recovery", label, "skipped", f"not_search,current={self._current_mock_page_name()}")
+                return
+
             self.d.press("back")
             self.think(0.4, 0.9)
+            current = self._current_mock_page_name()
+            if current in {"home_feed", "network", "messages", "notifications", "unknown"}:
+                self.logger.log("search_recovery", label, "success", f"left_search,current={current}")
+                return
             if self._is_search_page_open(timeout=0.4):
                 self.d.press("back")
                 self.think(0.4, 0.9)
-            self.logger.log("search_recovery", label, "success", "left_search_after_profile_reject")
+            self.logger.log("search_recovery", label, "success", f"left_search_after_profile_reject,current={self._current_mock_page_name()}")
         except Exception as exc:
             self.logger.log("search_recovery", label, "failed", repr(exc))
 
@@ -1300,14 +1373,17 @@ class AndroidMockSiteDriver:
             return False
         if candidate is None or candidate.score is None:
             return False
+        if self._is_real_linkedin_app() and not discovery.get("allow_real_linkedin_auto_connect", False):
+            self.logger.log("connect", candidate.name or search_query, "manual_required", "real_linkedin_auto_connect_disabled")
+            return False
 
         threshold = self._auto_connect_score_threshold()
-        if candidate.score <= threshold:
+        if candidate.score < threshold:
             self.logger.log(
                 "connect",
                 candidate.name or search_query,
                 "skipped",
-                f"score={candidate.score}<=threshold={threshold}",
+                f"score={candidate.score}<threshold={threshold}",
             )
             return False
 
@@ -1326,14 +1402,14 @@ class AndroidMockSiteDriver:
                 "connect",
                 candidate.name or search_query,
                 "clicked",
-                f"score={candidate.score}>threshold={threshold}",
+                f"score={candidate.score}>=threshold={threshold}",
             )
         else:
             self.logger.log(
                 "connect",
                 candidate.name or search_query,
                 "not_found",
-                f"score={candidate.score}>threshold={threshold}",
+                f"score={candidate.score}>=threshold={threshold}",
             )
         return True
 
@@ -1343,7 +1419,7 @@ class AndroidMockSiteDriver:
             return False
         linkedin_package = self.config.get("linkedin_app_package", "com.linkedin.android")
         if self.app_package == linkedin_package:
-            return bool(discovery.get("manual_connect_required", False))
+            return bool(discovery.get("manual_connect_required", True)) or not discovery.get("allow_real_linkedin_auto_connect", False)
         return bool(discovery.get("manual_connect_required", False))
 
     def _dedupe_text_blocks(self, blocks: list[str]) -> list[str]:
@@ -1431,7 +1507,7 @@ class AndroidMockSiteDriver:
                         selector.click()
                         self.think(0.5, 1.0)
                         self._dismiss_follow_notification_popup()
-                        return True
+                        return self._connect_click_confirmed() if self._is_real_linkedin_app() else True
                 except Exception:
                     pass
 
@@ -1451,9 +1527,13 @@ class AndroidMockSiteDriver:
                         button.click()
                         self.think(0.5, 1.0)
                         self._dismiss_follow_notification_popup()
-                        return True
+                        return self._connect_click_confirmed() if self._is_real_linkedin_app() else True
             except Exception:
                 pass
+
+            if self._is_real_linkedin_app() and not self.config.get("candidate_discovery", {}).get("allow_coordinate_connect_fallbacks", False):
+                self.logger.log("connect", self.target, "not_found", "coordinate_connect_fallback_disabled")
+                return False
 
             # Mock profile top-card fallback: Connect is the left primary CTA.
             try:
@@ -1462,14 +1542,29 @@ class AndroidMockSiteDriver:
                     self.d.click(int(width * random.uniform(0.18, 0.34)), int(height * y_ratio))
                     self.think(0.5, 1.0)
                     self._dismiss_follow_notification_popup()
-                    return True
+                    return self._connect_click_confirmed() if self._is_real_linkedin_app() else True
             except Exception:
                 pass
         clicked = self._click_text("Connect") or self._click_text("Follow")
         if clicked:
             self.think(0.5, 1.0)
             self._dismiss_follow_notification_popup()
+            if self.target == "app" and self._is_real_linkedin_app():
+                return self._connect_click_confirmed()
         return clicked
+
+    def _connect_click_confirmed(self) -> bool:
+        xml = self._visible_hierarchy().lower()
+        confirmed_terms = (
+            "pending",
+            "invitation sent",
+            "invitation has been sent",
+            "following",
+            "withdraw",
+            "add a note",
+            "send without a note",
+        )
+        return any(term in xml for term in confirmed_terms)
 
     def _dismiss_follow_notification_popup(self) -> bool:
         """If a follow-notification dialog appears, choose Off."""
@@ -1931,10 +2026,13 @@ class AndroidMockSiteDriver:
                         self._return_to_results_if_needed()
                         continue
                     scored_candidate = self._score_open_profile_candidate(search_query)
-                    self._maybe_connect_scored_profile(scored_candidate, search_query)
                     opened += 1
-                    page_opened += 1
-                    self.logger.log("candidate_profile_open", search_query, "scored", f"opened={opened},page={page}")
+                    if scored_candidate is None:
+                        self.logger.log("candidate_profile_open", search_query, "opened_unscored", f"opened={opened},page={page}")
+                    else:
+                        self._maybe_connect_scored_profile(scored_candidate, search_query)
+                        page_opened += 1
+                        self.logger.log("candidate_profile_open", search_query, "scored", f"opened={opened},page={page}")
                     self._return_to_results_if_needed()
                     self.think(0.6, 1.2)
                 except Exception as exc:
@@ -2085,31 +2183,35 @@ class AndroidMockSiteDriver:
                 pass
             try:
                 xml = self._visible_hierarchy().lower()
-                has_action = any(term in xml for term in ("connect", "follow", "message"))
-                has_profile_section = any(term in xml for term in ("about", "activity", "experience", "education"))
-                if has_action and has_profile_section:
-                    return True
-                if any(noise in xml for noise in ("show all results", "see all results", self.rid("results_list").lower())):
-                    return False
-                return has_action and has_profile_section
+                if self._is_real_linkedin_app():
+                    return self._has_real_profile_signal(xml)
+                return "profile page" in xml or self.rid("profile_page").lower() in xml
             except Exception:
                 return False
         return False
 
     def _return_to_results_if_needed(self) -> None:
         try:
-            if self._looks_like_open_profile():
-                self.d.press("back")
-                self.think(0.8, 1.5)
-            elif self._is_search_page_open(timeout=0.3):
+            if self._is_search_page_open(timeout=0.3):
+                return
+            if self._looks_like_open_profile() or self._current_mock_page_name() == "profile":
+                for attempt in range(1, 3):
+                    self.d.press("back")
+                    self.think(0.8, 1.5)
+                    if self._is_search_page_open(timeout=0.6):
+                        self.logger.log("return_to_results", self.target, "success", f"attempt={attempt}")
+                        return
+                self.logger.log("return_to_results", self.target, "failed", f"current={self._current_mock_page_name()}")
                 return
         except Exception:
             pass
 
     def _extract_people_result_candidates(self, search_query: str, page: int) -> list[Candidate]:
+        row_windows = [str(item.get("text") or "") for item in self._visible_profile_result_selectors() if str(item.get("text") or "").strip()]
         blocks = self._visible_result_text_blocks()
         candidates: list[Candidate] = []
-        for sequence, window in enumerate(self._candidate_windows_from_blocks(blocks), start=1):
+        windows = row_windows + [window for window in self._candidate_windows_from_blocks(blocks) if window not in row_windows]
+        for sequence, window in enumerate(windows, start=1):
             candidate = self.candidate_extractor.from_visible_text(
                 window,
                 search_query,
@@ -2165,10 +2267,6 @@ class AndroidMockSiteDriver:
             signals = ["1st", "2nd", "connect", "follow", "message", " at ", "followers", "connections"]
             if any(signal in lowered for signal in signals):
                 windows.append(window)
-        if not windows:
-            joined = "\n".join(blocks[:8])
-            if joined.strip():
-                windows.append(joined)
         return windows
 
     def _safe_results_scroll_down(self) -> None:
@@ -2188,13 +2286,15 @@ class AndroidMockSiteDriver:
             return False
         try:
             self.logger.log("candidate_search_fallback", search_query, "started", "profile_filter_only")
+            self._log_ui_snapshot("fallback_before_profile_only", search_query)
             if not self._is_search_page_open(timeout=0.8):
-                self.d.press("back")
-                self.think(0.6, 1.1)
+                self.logger.log("candidate_search_fallback", search_query, "failed", f"not_on_results,current={self._current_mock_page_name()}")
+                return False
             self._open_all_search_results(search_query)
             self._apply_candidate_search_filters(search_query, include_connections=False)
             cleared = self._clear_connection_type_filters(search_query)
             self._wait_for_profile_results(search_query)
+            self._log_ui_snapshot("fallback_after_profile_only", search_query)
             self.logger.log("candidate_search_fallback", search_query, "applied", f"profile_filter_only,cleared={','.join(cleared) or 'none'}")
             return True
         except Exception as exc:
@@ -2244,6 +2344,23 @@ class AndroidMockSiteDriver:
             self.think(0.4, 0.8)
         self.logger.log("candidate_search_results_wait", search_query, "empty", "profiles_not_detected")
         return False
+
+    def _log_ui_snapshot(self, label: str, target: str) -> None:
+        if self.target != "app":
+            return
+        try:
+            page = self._current_mock_page_name()
+            results = len(self._visible_profile_result_selectors())
+            bottom_nav = self._is_bottom_menu_visible()
+            search_open = self._is_search_page_open(timeout=0.2)
+            self.logger.log(
+                "ui_snapshot",
+                target,
+                "observed",
+                f"label={label},page={page},visible_results={results},search_open={search_open},bottom_nav={bottom_nav}",
+            )
+        except Exception as exc:
+            self.logger.log("ui_snapshot", target, "failed", f"label={label},error={exc!r}")
 
     def _apply_candidate_search_filters(self, search_query: str, include_connections: bool = True) -> None:
         settings = self.config.get("candidate_discovery", {})
@@ -2495,11 +2612,15 @@ class AndroidMockSiteDriver:
                 if attempt == 1 and self._is_search_page_open(timeout=0.5):
                     self.logger.log("search_profile_rejected", name, "retrying", "returned_to_search_after_result_click")
                     try:
-                        self.d.press("back")
-                        self.think(0.5, 1.0)
-                        self._focus_search_box()
-                        self._type_text_human(name)
-                        self.think(1.0, 2.0)
+                        if self._is_real_linkedin_app():
+                            self._open_all_search_results(name)
+                            self._wait_for_profile_results(name)
+                        else:
+                            self.d.press("back")
+                            self.think(0.5, 1.0)
+                            self._focus_search_box()
+                            self._type_text_human(name)
+                            self.think(1.0, 2.0)
                     except Exception:
                         pass
                     continue
@@ -2537,9 +2658,7 @@ class AndroidMockSiteDriver:
                     self.think(0.7, 1.4)
                     if self.d(resourceId=self.rid("profile_page")).exists(timeout=1.0):
                         return True
-                    # Some real/result screens navigate more slowly or expose
-                    # profile content without MockIn's profile_page ID.
-                    if self.d(textContains="Follow").exists(timeout=0.6) or self.d(textContains="Connect").exists(timeout=0.6):
+                    if self._looks_like_open_profile():
                         return True
                     if self._is_search_page_open(timeout=0.3):
                         self.logger.log("search_result_click", name, "rejected", "still_on_search_page")

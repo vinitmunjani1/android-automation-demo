@@ -35,6 +35,11 @@ def load_config(path: Path) -> dict:
                     **profile["candidate_scoring"].get("weights", {}),
                 }
             config["candidate_scoring"] = merged_scoring
+    discovery = config.setdefault("candidate_discovery", {})
+    output_dir = Path(discovery.get("output_dir", path.parent / "output" / "candidate_discovery"))
+    if not output_dir.is_absolute():
+        output_dir = path.parent / output_dir
+    discovery["output_dir"] = str(output_dir)
     required = [
         "time_window", "feed_scroll_min", "feed_scroll_max", "like_probability",
         "connect_probability", "profile_view_min_seconds", "profile_view_max_seconds",
@@ -106,7 +111,8 @@ def run_candidate_discovery(mode: str, config: dict, search_query: str, logger: 
     output_dir = Path(config.get("candidate_discovery", {}).get("output_dir", ROOT / "output" / "candidate_discovery"))
     service = CandidateDiscoveryService(driver, config, logger, output_dir)
     run = service.run(search_query, resume=resume)
-    logger.log("candidate_discovery_complete", search_query, "success", f"run_id={run.run_id},candidates={len(run.candidates)}")
+    status = "success" if run.candidates else "empty"
+    logger.log("candidate_discovery_complete", search_query, status, f"run_id={run.run_id},candidates={len(run.candidates)}")
 
 
 def run_candidate_profile_finder(mode: str, config: dict, targets: list[Contact], logger: ActionLogger) -> None:
