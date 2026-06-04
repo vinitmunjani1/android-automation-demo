@@ -116,12 +116,19 @@ class AndroidMockSiteDriver:
                 continue
             self.logger.log("open_profile", contact.name, "success", f"{contact.title} at {contact.company}")
             self._analyze_open_profile(contact.name)
-            self._score_open_profile_candidate(contact.name)
+            scored_candidate = self._score_open_profile_candidate(contact.name)
             self._return_profile_to_top(contact.name)
 
             min_view = float(self.config["profile_view_min_seconds"])
             max_view = float(self.config["profile_view_max_seconds"])
             time.sleep(random.uniform(min_view, max_view) + random.uniform(0.8, 2.8))
+
+            if self._maybe_connect_scored_profile(scored_candidate, contact.name):
+                self.action_transition_pause()
+                continue
+            if scored_candidate is not None:
+                self.action_transition_pause()
+                continue
 
             if self._manual_connect_required_when_scoring():
                 self.logger.log("connect", contact.name, "manual_required", "candidate_scoring_enabled")
@@ -564,12 +571,19 @@ class AndroidMockSiteDriver:
             return
         self.logger.log("open_profile", contact.name, "success", f"{contact.title} at {contact.company}")
         self._analyze_open_profile(contact.name)
-        self._score_open_profile_candidate(contact.name)
+        scored_candidate = self._score_open_profile_candidate(contact.name)
         self._return_profile_to_top(contact.name)
 
         min_view = float(self.config["profile_view_min_seconds"])
         max_view = float(self.config["profile_view_max_seconds"])
         time.sleep(random.uniform(min_view, max_view) + random.uniform(0.8, 2.8))
+
+        if self._maybe_connect_scored_profile(scored_candidate, contact.name):
+            self.action_transition_pause()
+            return
+        if scored_candidate is not None:
+            self.action_transition_pause()
+            return
 
         if self._manual_connect_required_when_scoring():
             self.logger.log("connect", contact.name, "manual_required", "candidate_scoring_enabled")
@@ -1067,24 +1081,25 @@ class AndroidMockSiteDriver:
             self.action_transition_pause()
         self.logger.log("profile_analysis_end", label, "success", "humanized_profile_review")
 
-    def _score_open_profile_candidate(self, search_query: str) -> None:
-        """Score the currently opened profile without changing navigation.
+    def _score_open_profile_candidate(self, search_query: str) -> Candidate | None:
+        """Score and save the currently opened profile without changing navigation.
 
         This is the integration hook for the existing profile-finding flow: once
         the branch has already found/opened a profile, snapshot visible text,
-        score it, and persist it. It does not click Connect.
+        score it, and persist it. Connect decisions are handled after the profile
+        is returned to the top where the Connect button is reachable.
         """
         discovery = self.config.get("candidate_discovery", {})
         if not discovery.get("score_existing_profile_flow", True):
-            return
+            return None
         try:
             if self.target == "app" and self._current_mock_page_name() != "profile":
                 self.logger.log("candidate_profile_score", search_query, "skipped", f"not_profile_page={self._current_mock_page_name()}")
-                return
+                return None
             visible_text = self._visible_text_for_candidate_scoring()
             if not visible_text.strip():
                 self.logger.log("candidate_profile_score", search_query, "empty", "no_visible_text")
-                return
+                return None
             candidate = self.candidate_extractor.from_visible_text(
                 visible_text,
                 search_query,
@@ -1093,10 +1108,10 @@ class AndroidMockSiteDriver:
             )
             if not candidate:
                 self.logger.log("candidate_profile_score", search_query, "empty", "extractor_returned_none")
-                return
+                return None
             if self._is_generic_candidate_name(candidate.name):
                 self.logger.log("candidate_profile_score", search_query, "skipped", f"generic_name={candidate.name}")
-                return
+                return None
             if candidate.profile_url and candidate.profile_url.startswith("mockin://") and self.app_package == self.config.get("linkedin_app_package", "com.linkedin.android"):
                 candidate.profile_url = None
             candidate.additional_metadata.update(
@@ -1105,6 +1120,7 @@ class AndroidMockSiteDriver:
                     "driver_mode": "android_existing_flow",
                     "app_package": self.app_package,
                     "manual_connect_required": self._manual_connect_required_when_scoring(),
+                    "auto_connect_threshold": self._auto_connect_score_threshold(),
                     "captured_at": utc_now(),
                 }
             )
@@ -1115,8 +1131,10 @@ class AndroidMockSiteDriver:
                 "success",
                 f"score={candidate.score},recommendation={candidate.additional_metadata.get('recommendation')}",
             )
+            return candidate
         except Exception as exc:
             self.logger.log("candidate_profile_score", search_query, "failed", repr(exc))
+        return None
 
     def _visible_text_for_candidate_scoring(self) -> str:
         blocks: list[str] = []
@@ -1186,13 +1204,60 @@ class AndroidMockSiteDriver:
         )
         self._candidate_persistence.save(self._profile_flow_run, self._profile_flow_run_path or self._candidate_persistence.next_run_path())
 
+    def _auto_connect_score_threshold(self) -> int:
+        discovery = self.config.get("candidate_discovery", {})
+        return int(discovery.get("auto_connect_min_score", discovery.get("connect_score_threshold", 70)))
+
+    def _maybe_connect_scored_profile(self, candidate: Candidate | None, search_query: str) -> bool:
+        discovery = self.config.get("candidate_discovery", {})
+        if not discovery.get("auto_connect_scored_profiles", True):
+            return False
+        if candidate is None or candidate.score is None:
+            return False
+
+        threshold = self._auto_connect_score_threshold()
+        if candidate.score <= threshold:
+            self.logger.log(
+                "connect",
+                candidate.name or search_query,
+                "skipped",
+                f"score={candidate.score}<=threshold={threshold}",
+            )
+            return False
+
+        self.think(0.5, 1.8)
+        clicked = self._click_connect_button()
+        candidate.additional_metadata.update(
+            {
+                "auto_connect_attempted_at": utc_now(),
+                "auto_connect_threshold": threshold,
+                "auto_connect_status": "clicked" if clicked else "not_found",
+            }
+        )
+        self._save_scored_profile_candidate(candidate, search_query)
+        if clicked:
+            self.logger.log(
+                "connect",
+                candidate.name or search_query,
+                "clicked",
+                f"score={candidate.score}>threshold={threshold}",
+            )
+        else:
+            self.logger.log(
+                "connect",
+                candidate.name or search_query,
+                "not_found",
+                f"score={candidate.score}>threshold={threshold}",
+            )
+        return True
+
     def _manual_connect_required_when_scoring(self) -> bool:
         discovery = self.config.get("candidate_discovery", {})
         if not discovery.get("score_existing_profile_flow", True):
             return False
         linkedin_package = self.config.get("linkedin_app_package", "com.linkedin.android")
         if self.app_package == linkedin_package:
-            return True
+            return bool(discovery.get("manual_connect_required", False))
         return bool(discovery.get("manual_connect_required", False))
 
     def _dedupe_text_blocks(self, blocks: list[str]) -> list[str]:
@@ -1779,7 +1844,8 @@ class AndroidMockSiteDriver:
                         self.logger.log("candidate_profile_open", search_query, "skipped", "click_did_not_open_profile")
                         self._return_to_results_if_needed()
                         continue
-                    self._score_open_profile_candidate(search_query)
+                    scored_candidate = self._score_open_profile_candidate(search_query)
+                    self._maybe_connect_scored_profile(scored_candidate, search_query)
                     opened += 1
                     page_opened += 1
                     self.logger.log("candidate_profile_open", search_query, "scored", f"opened={opened},page={page}")
