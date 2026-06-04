@@ -77,6 +77,7 @@
   "candidate_profile_file": "candidate_profile.json",
   "stuck_page_watchdog_enabled": true,
   "stuck_page_same_signature_threshold": 2,
+  "page_state_machine_enabled": true,
   "mode": "android",
   "action_transition": {
     "min_seconds": 0.05,
@@ -98,7 +99,7 @@
     "candidate_dwell_max_seconds": 1.4,
     "score_existing_profile_flow": true,
     "auto_connect_scored_profiles": true,
-    "allow_real_linkedin_auto_connect": false,
+    "allow_real_linkedin_auto_connect": true,
     "auto_connect_min_score": 70,
     "manual_connect_required": false,
     "profile_finder_default": false,

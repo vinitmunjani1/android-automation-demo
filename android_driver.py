@@ -56,6 +56,8 @@ class AndroidMockSiteDriver:
         self._feed_likes_this_run = 0
         self._last_feed_like_at = 0.0
         self._liked_feed_post_signatures: set[str] = set()
+        self._seen_profile_result_signatures: set[str] = set()
+        self._active_search_query = ""
 
     def delay(self, multiplier: float = 1.0) -> None:
         lo = float(self.config["delay_min_seconds"])
@@ -102,6 +104,7 @@ class AndroidMockSiteDriver:
                 self.logger.log("search_person", contact.name, "failed", "search input missing")
                 continue
             self.think(0.2, 0.8)
+            self._active_search_query = contact.name
             if not self._type_text_human(contact.name):
                 self.logger.log("search_person", contact.name, "failed", "typing_not_verified")
                 self._leave_search_page(contact.name)
@@ -172,6 +175,7 @@ class AndroidMockSiteDriver:
             self.logger.log("candidate_search", search_query, "failed", "search input missing")
             return []
 
+        self._active_search_query = search_query
         if not self._type_text_human(search_query):
             self.logger.log("candidate_search", search_query, "failed", "typing_not_verified")
             self._leave_search_page(search_query)
@@ -312,6 +316,13 @@ class AndroidMockSiteDriver:
             real_linkedin = self._is_real_linkedin_app()
             if not real_linkedin:
                 self._guard_bottom_menu_before_step(f"step_{step}_pre_action")
+
+            if self.target == "app" and self.config.get("page_state_machine_enabled", True):
+                current_page = self._current_mock_page_name()
+                if self._handle_classified_page_context(step, current_page, remaining_contacts):
+                    self._record_page_progress(f"step_{step}_page_{current_page}")
+                    continue
+
             choices = ["pause", "home"]
             if remaining_contacts:
                 choices.extend(["profile_finder", "profile_finder", "profile_finder"])
@@ -361,6 +372,132 @@ class AndroidMockSiteDriver:
             self._record_page_progress(f"step_{step}_{action}")
 
         self.logger.log("random_journey_end", self.target, "success", f"remaining_contacts={len(remaining_contacts)}")
+
+    def _handle_classified_page_context(self, step: int, page: str, remaining_contacts: list[Contact]) -> bool:
+        if self.target != "app":
+            return False
+        # Home is already a stable page; let the random action selector decide
+        # whether to read/feed-scroll, search, pause, or navigate elsewhere.
+        if page == "home_feed":
+            return False
+
+        self.logger.log("page_dispatch", f"step_{step}", "handling", f"page={page}")
+        if page == "search_bar":
+            return self._handle_search_bar_page(step, remaining_contacts)
+        if page == "search_results":
+            return self._handle_search_results_page(step)
+        if page == "profile":
+            self._handle_profile_page_action(f"step_{step}_profile", self._active_search_query or "profile_page")
+            self._navigate_to_random_page_after_context(step, remaining_contacts)
+            return True
+        if page == "notifications":
+            self._handle_notifications_page_action(step, remaining_contacts)
+            return True
+        if page == "network":
+            self._handle_network_page_action(step, remaining_contacts)
+            return True
+        if page == "unknown":
+            home_ok = self._go_home()
+            self.logger.log("page_dispatch", f"step_{step}", "recovered" if home_ok else "not_confirmed", "unknown_to_home")
+            return True
+        return False
+
+    def _handle_search_bar_page(self, step: int, remaining_contacts: list[Contact]) -> bool:
+        if not remaining_contacts:
+            home_ok = self._go_home()
+            self.logger.log("search_bar_handler", f"step_{step}", "no_query", f"home={home_ok}")
+            return True
+        contact = remaining_contacts.pop(0)
+        self._active_search_query = contact.name
+        self.logger.log("search_bar_handler", f"step_{step}", "typing_query", contact.name)
+        self._clear_focused_text_field()
+        if not self._type_text_human(contact.name):
+            self.logger.log("search_bar_handler", contact.name, "failed", "typing_not_verified")
+            return True
+        self._open_all_search_results(contact.name)
+        self._apply_candidate_search_filters(contact.name)
+        self._wait_for_profile_results(contact.name)
+        return True
+
+    def _handle_search_results_page(self, step: int) -> bool:
+        query = self._active_search_query or "search_results"
+        self._ensure_filter_sheet_closed(query)
+        if self._has_no_search_results_visible():
+            self.logger.log("search_results_handler", f"step_{step}", "empty", "no_results_found")
+            self._leave_search_page(query)
+            return True
+        if self._open_one_random_profile_result_and_score(query):
+            return True
+        before = self._page_signature()
+        self._safe_results_scroll_down()
+        self.think(0.8, 1.8)
+        if self._has_no_search_results_visible():
+            self.logger.log("search_results_handler", f"step_{step}", "empty_after_scroll", "no_results_found")
+            self._leave_search_page(query)
+        elif before == self._page_signature():
+            self.logger.log("search_results_handler", f"step_{step}", "no_progress", "return_home")
+            self._leave_search_page(query)
+        return True
+
+    def _handle_profile_page_action(self, label: str, search_query: str) -> bool:
+        self.logger.log("profile_page_handler", label, "started", f"query={search_query}")
+        self._analyze_open_profile(label)
+        candidate = self._score_open_profile_candidate(search_query)
+        self._return_profile_to_top(label)
+        self.think(
+            float(self.config.get("profile_view_min_seconds", 1.0)),
+            float(self.config.get("profile_view_max_seconds", 2.5)),
+        )
+        connected = self._maybe_connect_scored_profile(candidate, search_query)
+        self.logger.log(
+            "profile_page_handler",
+            label,
+            "complete",
+            f"scored={candidate is not None},score={candidate.score if candidate else None},connect_attempted={connected}",
+        )
+        return candidate is not None
+
+    def _handle_notifications_page_action(self, step: int, remaining_contacts: list[Contact]) -> None:
+        self.logger.log("notifications_handler", f"step_{step}", "started", "current_page")
+        opened = self._click_random_notification()
+        self.think(
+            float(self.config.get("notifications_scan_min_seconds", 0.8)),
+            float(self.config.get("notifications_scan_max_seconds", 2.2)),
+        )
+        if opened and self._current_mock_page_name() == "profile":
+            self._handle_profile_page_action(f"step_{step}_notification_profile", "notification_profile")
+        self._navigate_to_random_page_after_context(step, remaining_contacts)
+
+    def _handle_network_page_action(self, step: int, remaining_contacts: list[Contact]) -> None:
+        self.logger.log("network_handler", f"step_{step}", "started", "browse_recommendations")
+        if random.random() < 0.75:
+            self._scroll_content_down()
+            self.think(0.8, 2.4)
+        if self._open_random_network_profile():
+            self._handle_profile_page_action(f"step_{step}_network_profile", "network_recommendation")
+            self._navigate_to_random_page_after_context(step, remaining_contacts)
+        else:
+            self.logger.log("network_handler", f"step_{step}", "not_found", "no_profile_target")
+            self._navigate_to_random_page_after_context(step, remaining_contacts)
+
+    def _navigate_to_random_page_after_context(self, step: int, remaining_contacts: list[Contact]) -> None:
+        choices = ["home", "home", "pause"]
+        if remaining_contacts:
+            choices.append("profile_finder")
+        if not self._is_real_linkedin_app():
+            choices.extend(["network", "notifications"])
+        choice = random.choice(choices)
+        self.logger.log("page_dispatch_next", f"step_{step}", "selected", choice)
+        if choice == "profile_finder" and remaining_contacts:
+            self._visit_contact(remaining_contacts.pop(0))
+        elif choice == "home":
+            self._go_home()
+        elif choice == "network":
+            self._browse_network_and_connect()
+        elif choice == "notifications":
+            self._check_notifications()
+        else:
+            self.think(0.7, 1.8)
 
     def _record_page_progress(self, label: str, recover: bool = True) -> None:
         """Detect repeated no-progress screen states and recover safely."""
@@ -477,6 +614,9 @@ class AndroidMockSiteDriver:
         xml = self._visible_hierarchy()
         low = xml.lower()
 
+        if self._is_search_input_active() and not self._has_results_or_typeahead_signal(low):
+            return "search_bar"
+
         # Home can contain "Recommended for you" profile cards with Connect/
         # Follow/1st/2nd text. Treat active Home as Home before any generic
         # people/result-row heuristics, otherwise recommendations are mistaken
@@ -569,6 +709,24 @@ class AndroidMockSiteDriver:
         if has_filter_context and has_connection_chip and has_row_action:
             return True
         return False
+
+    def _is_search_input_active(self) -> bool:
+        if self.target != "app":
+            return False
+        try:
+            focused = self.d(focused=True)
+            if focused.exists(timeout=0.1):
+                info = focused.info or {}
+                class_name = str(info.get("className") or "").lower()
+                label = " ".join(str(info.get(key) or "") for key in ("text", "contentDescription")).lower()
+                if "edittext" in class_name or "search" in label:
+                    return True
+        except Exception:
+            pass
+        try:
+            return bool(re.search(r'class="android\.widget\.EditText"[^>]*focused="true"', self._visible_hierarchy()))
+        except Exception:
+            return False
 
     def _has_real_profile_signal(self, low_xml: str | None = None) -> bool:
         low = low_xml if low_xml is not None else self._visible_hierarchy().lower()
@@ -731,6 +889,7 @@ class AndroidMockSiteDriver:
             self.logger.log("search_person", contact.name, "failed", "search input missing")
             return
         self.think(0.2, 0.8)
+        self._active_search_query = contact.name
         if not self._type_text_human(contact.name):
             self.logger.log("search_person", contact.name, "failed", "typing_not_verified")
             self._leave_search_page(contact.name)
@@ -1879,6 +2038,62 @@ class AndroidMockSiteDriver:
     def _open_notifications_again(self) -> None:
         self._open_notifications_tab()
 
+    def _click_random_notification(self) -> bool:
+        if self.target != "app":
+            return False
+        targets: list[dict] = []
+        seen: set[str] = set()
+        try:
+            width, height = self.d.window_size()
+        except Exception:
+            width, height = 0, 0
+        for class_name in ("android.view.ViewGroup", "android.widget.TextView", "android.view.View"):
+            try:
+                nodes = list(self.d(className=class_name))
+            except Exception:
+                nodes = []
+            for node in nodes:
+                try:
+                    info = node.info or {}
+                    label = self._xml_unescape(" ".join(str(info.get(key) or "") for key in ("text", "contentDescription")).strip())
+                    if not self._looks_like_notification_target(label):
+                        continue
+                    bounds = info.get("bounds") or {}
+                    top = int(bounds.get("top", 0))
+                    bottom = int(bounds.get("bottom", 0))
+                    left = int(bounds.get("left", 0))
+                    right = int(bounds.get("right", 0))
+                    if right <= left or bottom <= top:
+                        continue
+                    cy = (top + bottom) // 2
+                    if height and not (int(height * 0.16) <= cy <= int(height * 0.86)):
+                        continue
+                    signature = f"{label[:100]}|{bounds}"
+                    if signature in seen:
+                        continue
+                    seen.add(signature)
+                    targets.append({"x": (left + right) // 2, "y": cy, "signature": signature})
+                except Exception:
+                    pass
+        if not targets:
+            self.logger.log("notification_click", self.target, "not_found", "no_visible_notification_target")
+            return False
+        target = random.choice(targets[: min(5, len(targets))])
+        self.d.click(int(target["x"]), int(target["y"]))
+        self.think(1.0, 2.4)
+        self.logger.log("notification_click", self.target, "clicked", target["signature"][:100])
+        return True
+
+    def _looks_like_notification_target(self, label: str) -> bool:
+        clean = label.strip().lower()
+        if len(clean) < 8:
+            return False
+        blocked = ("notifications", "home", "my network", "jobs", "messaging", "premium")
+        if clean in blocked:
+            return False
+        signals = ("viewed", "reacted", "commented", "mentioned", "posted", "followed", "invitation", "connection", "profile")
+        return any(signal in clean for signal in signals)
+
     def _open_notifications_tab(self) -> bool:
         if self._is_notifications_page_open(timeout=0.4):
             return True
@@ -2064,6 +2279,63 @@ class AndroidMockSiteDriver:
                     selector.click()
                     self.think(1.0, 2.0)
                     return self.d(resourceId=self.rid("profile_page")).exists(timeout=1.0)
+            except Exception:
+                pass
+        return False
+
+    def _open_random_network_profile(self) -> bool:
+        targets: list[dict] = []
+        seen: set[str] = set()
+        try:
+            width, height = self.d.window_size()
+        except Exception:
+            width, height = 0, 0
+        selectors = [
+            self.d(resourceId=self.rid("network_person_card")),
+            self.d(descriptionContains="Network suggestion"),
+            self.d(textContains="Connect"),
+            self.d(descriptionContains="Connect"),
+        ]
+        for selector in selectors:
+            try:
+                if not selector.exists(timeout=0.2):
+                    continue
+                try:
+                    nodes = list(selector) or [selector]
+                except Exception:
+                    nodes = [selector]
+                for node in nodes:
+                    info = node.info or {}
+                    label = self._xml_unescape(" ".join(str(info.get(key) or "") for key in ("text", "contentDescription")).strip())
+                    bounds = info.get("bounds") or {}
+                    top = int(bounds.get("top", 0))
+                    bottom = int(bounds.get("bottom", 0))
+                    left = int(bounds.get("left", 0))
+                    right = int(bounds.get("right", 0))
+                    if right <= left or bottom <= top:
+                        continue
+                    cy = (top + bottom) // 2
+                    if height and not (int(height * 0.20) <= cy <= int(height * 0.86)):
+                        continue
+                    signature = f"{label[:100]}|{bounds}"
+                    if signature in seen:
+                        continue
+                    seen.add(signature)
+                    # Click left/center of the recommendation card, not the
+                    # Connect button itself; profile action decides connect.
+                    targets.append({"x": max(int(width * 0.20), min(int(width * 0.52), left + max(20, (right - left) // 3))) if width else (left + right) // 2, "y": cy, "signature": signature})
+            except Exception:
+                pass
+        if not targets:
+            return self._open_network_profile()
+        random.shuffle(targets)
+        for target in targets[:5]:
+            try:
+                self.d.click(int(target["x"]), int(target["y"]))
+                self.think(1.0, 2.2)
+                if self._current_mock_page_name() == "profile":
+                    self.logger.log("network_profile", self.target, "opened", f"random_recommendation={target['signature'][:100]}")
+                    return True
             except Exception:
                 pass
         return False
@@ -2280,6 +2552,41 @@ class AndroidMockSiteDriver:
             self._safe_results_scroll_down()
             self.think(0.8, 1.6)
         return scored
+
+    def _has_no_search_results_visible(self) -> bool:
+        low = self._visible_hierarchy().lower()
+        no_result_terms = (
+            "no results found",
+            "no results",
+            "couldn't find any results",
+            "try a different keyword",
+            "try different keywords",
+        )
+        return any(term in low for term in no_result_terms)
+
+    def _open_one_random_profile_result_and_score(self, search_query: str) -> bool:
+        targets = self._visible_profile_result_selectors()
+        random.shuffle(targets)
+        for target in targets:
+            signature = str(target.get("signature") or "")
+            if not signature or signature in self._seen_profile_result_signatures:
+                continue
+            self._seen_profile_result_signatures.add(signature)
+            try:
+                self.d.click(int(target["x"]), int(target["y"]))
+                self.think(1.1, 2.4)
+                current = self._current_mock_page_name()
+                if current != "profile" or self._is_search_page_open(timeout=0.2):
+                    self.logger.log("search_results_handler", search_query, "click_rejected", f"current={current},signature={signature[:80]}")
+                    self._return_to_results_if_needed()
+                    continue
+                self._handle_profile_page_action("search_result_profile", search_query)
+                self._return_to_results_if_needed()
+                return True
+            except Exception as exc:
+                self.logger.log("search_results_handler", search_query, "click_failed", repr(exc))
+        self.logger.log("search_results_handler", search_query, "no_unseen_profiles", f"visible={len(targets)}")
+        return False
 
     def _visible_profile_result_selectors(self):
         if self._is_real_linkedin_app() and self._is_real_home_context():
