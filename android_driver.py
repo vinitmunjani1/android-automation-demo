@@ -110,6 +110,8 @@ class AndroidMockSiteDriver:
                     collected = self._collect_and_score_visible_search_results(contact.name)
                     self.logger.log("candidate_results_profile_only_retry", contact.name, "success", f"candidates={collected}")
                 self.logger.log("candidate_results_ranked", contact.name, "success", f"candidates={collected}")
+                if collected == 0:
+                    self._leave_search_page(contact.name)
                 self.action_transition_pause()
                 continue
 
@@ -571,6 +573,8 @@ class AndroidMockSiteDriver:
                 collected = self._collect_and_score_visible_search_results(contact.name)
                 self.logger.log("candidate_results_profile_only_retry", contact.name, "success", f"candidates={collected}")
             self.logger.log("candidate_results_ranked", contact.name, "success", f"candidates={collected}")
+            if collected == 0:
+                self._leave_search_page(contact.name)
             self.action_transition_pause()
             return
 
@@ -1918,21 +1922,43 @@ class AndroidMockSiteDriver:
     def _looks_like_profile_result_text(self, text: str) -> bool:
         if not self._is_candidate_result_text(text):
             return False
-        lowered = text.lower()
+        clean = text.strip()
+        lowered = clean.lower()
         blocked_exact = {
             "1st", "2nd", "3rd", "people", "connections", "all filters", "show results", "apply",
             "posts", "jobs", "companies", "groups", "schools", "courses", "services", "events",
         }
-        if lowered.strip() in blocked_exact:
+        if lowered in blocked_exact:
             return False
         blocked = ["job", "hiring now", "company", "group", "school", "course"]
         if any(term == lowered or lowered.startswith(term + " ") for term in blocked):
             return False
         scoring = self.config.get("candidate_scoring", {})
-        profile_terms = ["1st", "2nd", "connect", "follow", "message"]
+        profile_terms = ["1st", "2nd", "connect", "follow", "message", "followers", "connections", "view profile"]
         for key in ("title_keywords", "company_keywords", "positive_keywords"):
             profile_terms.extend(str(value).lower() for value in scoring.get(key, []))
-        return any(term and term in lowered for term in profile_terms)
+        if any(term and term in lowered for term in profile_terms):
+            return True
+        return self._looks_like_person_name_text(clean) or self._looks_like_profile_headline_text(clean)
+
+    def _looks_like_person_name_text(self, text: str) -> bool:
+        clean = re.sub(r"\s+", " ", text.strip())
+        if not 3 <= len(clean) <= 80:
+            return False
+        if any(char.isdigit() for char in clean):
+            return False
+        words = clean.split()
+        if not 2 <= len(words) <= 5:
+            return False
+        alpha_words = [re.sub(r"[^A-Za-zÀ-ÖØ-öø-ÿ'’-]", "", word) for word in words]
+        if any(len(word) < 2 for word in alpha_words):
+            return False
+        return sum(1 for word in alpha_words if word[:1].isupper()) >= min(2, len(alpha_words))
+
+    def _looks_like_profile_headline_text(self, text: str) -> bool:
+        lowered = text.lower()
+        headline_signals = ["founder", "co-founder", "ceo", "cto", "engineer", "developer", "manager", "director", "student", " at ", "@"]
+        return any(signal in lowered for signal in headline_signals)
 
     def _looks_like_result_row_bounds(self, info: dict, width: int, height: int) -> bool:
         if not height:
@@ -2062,21 +2088,62 @@ class AndroidMockSiteDriver:
             return False
         try:
             self.logger.log("candidate_search_fallback", search_query, "started", "profile_filter_only")
-            self._go_home()
-            self.think(0.7, 1.4)
-            if not self._focus_search_box():
-                self.logger.log("candidate_search_fallback", search_query, "failed", "search input missing")
-                return False
-            self.think(0.2, 0.7)
-            self._type_text_human(search_query)
-            self.think(1.2, 2.4)
+            if not self._is_search_page_open(timeout=0.8):
+                self.d.press("back")
+                self.think(0.6, 1.1)
             self._open_all_search_results(search_query)
             self._apply_candidate_search_filters(search_query, include_connections=False)
-            self.logger.log("candidate_search_fallback", search_query, "applied", "profile_filter_only")
+            cleared = self._clear_connection_type_filters(search_query)
+            self._wait_for_profile_results(search_query)
+            self.logger.log("candidate_search_fallback", search_query, "applied", f"profile_filter_only,cleared={','.join(cleared) or 'none'}")
             return True
         except Exception as exc:
             self.logger.log("candidate_search_fallback", search_query, "failed", repr(exc))
             return False
+
+    def _clear_connection_type_filters(self, search_query: str) -> list[str]:
+        cleared: list[str] = []
+        configured = [str(label) for label in self.config.get("candidate_discovery", {}).get("connection_filters", ["1st", "2nd"])]
+
+        # On LinkedIn result pages selected connection chips are usually visible;
+        # tapping them again removes the filter. This keeps the existing People
+        # result set in place instead of bouncing Home and losing profiles.
+        for label in configured:
+            if self._click_filter_option(label, timeout=0.25):
+                cleared.append(label)
+                self.think(0.25, 0.7)
+        if cleared:
+            self.logger.log("search_filter_connections", search_query, "cleared", f"direct={','.join(cleared)}")
+            return cleared
+
+        if not self._open_connection_filter_menu(search_query):
+            self.logger.log("search_filter_connections", search_query, "clear_skipped", "menu_not_found")
+            return cleared
+        for label in configured:
+            if self._click_filter_option(label, timeout=0.5):
+                cleared.append(label)
+                self.think(0.2, 0.6)
+        if cleared:
+            self._apply_open_filter_dialog(search_query)
+            self.logger.log("search_filter_connections", search_query, "cleared", f"menu={','.join(cleared)}")
+        else:
+            try:
+                self.d.press("back")
+                self.think(0.4, 0.9)
+            except Exception:
+                pass
+            self.logger.log("search_filter_connections", search_query, "clear_skipped", "selected_filters_not_found")
+        return cleared
+
+    def _wait_for_profile_results(self, search_query: str, timeout_seconds: float = 4.0) -> bool:
+        deadline = time.time() + timeout_seconds
+        while time.time() < deadline:
+            if self._visible_profile_result_selectors() or self._extract_people_result_candidates(search_query, page=0):
+                self.logger.log("candidate_search_results_wait", search_query, "success", "profiles_visible")
+                return True
+            self.think(0.4, 0.8)
+        self.logger.log("candidate_search_results_wait", search_query, "empty", "profiles_not_detected")
+        return False
 
     def _apply_candidate_search_filters(self, search_query: str, include_connections: bool = True) -> None:
         settings = self.config.get("candidate_discovery", {})
@@ -2494,7 +2561,7 @@ class AndroidMockSiteDriver:
 
     def _type_text_human(self, text: str) -> None:
         if self.target == "app" and self._is_real_linkedin_app():
-            self._type_text_stable(text)
+            self._type_text_human_real_app(text)
             return
 
         typo_probability = float(self.human.get("typo_probability", 0.0))
@@ -2527,18 +2594,41 @@ class AndroidMockSiteDriver:
             if char == " " or (index > 1 and random.random() < 0.12):
                 time.sleep(random.uniform(0.25, 0.9))
 
-    def _type_text_stable(self, text: str) -> None:
-        """Keyboard-safe text entry for real app runs.
+    def _type_text_human_real_app(self, text: str) -> None:
+        """Human-paced text entry for real LinkedIn runs.
 
-        Avoid typo/rethink loops and random long pauses while the soft keyboard
-        is open; those can land as accidental key taps on some devices.
+        Keep it safe for the real app: type progressively with varied pauses but
+        avoid typo/rethink loops that can accidentally trigger keyboard actions.
         """
+        chunk_probability = float(self.human.get("real_app_typing_chunk_probability", 0.22))
+        min_delay = float(self.human.get("typing_delay_min_seconds", 0.09))
+        max_delay = float(self.human.get("typing_delay_max_seconds", 0.28))
+        index = 0
+        while index < len(text):
+            if text[index] != " " and random.random() < chunk_probability:
+                chunk = text[index : min(len(text), index + random.randint(2, 4))]
+                if " " in chunk:
+                    chunk = chunk.split(" ", 1)[0]
+                self._input_text_token(chunk)
+                index += len(chunk)
+                time.sleep(random.uniform(min_delay * 1.4, max_delay * 2.2))
+                continue
+            self._input_text_token(text[index])
+            index += 1
+            time.sleep(random.uniform(min_delay, max_delay))
+            if index > 1 and (text[index - 1] == " " or random.random() < 0.10):
+                time.sleep(random.uniform(0.20, 0.65))
+
+    def _input_text_token(self, token: str) -> None:
+        escaped = token.replace("%", "%25").replace(" ", "%s")
+        self.d.shell(f"input text {shlex.quote(escaped)}")
+
+    def _type_text_stable(self, text: str) -> None:
+        """Keyboard-safe text entry fallback."""
         try:
-            escaped = text.replace("%", "%25").replace(" ", "%s")
-            self.d.shell(f"input text {shlex.quote(escaped)}")
+            self._input_text_token(text)
             time.sleep(random.uniform(0.25, 0.55))
         except Exception:
             for char in text:
-                token = "%s" if char == " " else char
-                self.d.shell(f"input text {shlex.quote(token)}")
+                self._input_text_token(char)
                 time.sleep(random.uniform(0.03, 0.08))
