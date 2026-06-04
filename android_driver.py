@@ -473,6 +473,13 @@ class AndroidMockSiteDriver:
         xml = self._visible_hierarchy()
         low = xml.lower()
 
+        # Home can contain "Recommended for you" profile cards with Connect/
+        # Follow/1st/2nd text. Treat active Home as Home before any generic
+        # people/result-row heuristics, otherwise recommendations are mistaken
+        # for search results.
+        if self._is_real_home_context(low):
+            return "home_feed"
+
         if self._has_results_or_typeahead_signal(low):
             return "search_results"
 
@@ -487,12 +494,26 @@ class AndroidMockSiteDriver:
             return "messages"
         if any(term in low for term in ("notification", "notifications")) and any(term in low for term in ("reacted", "viewed", "mentioned", "posted")):
             return "notifications"
-        if any(term in low for term in ("start a post", "start a professional update", "share your thoughts", "what do you want to talk about")):
-            return "home_feed"
-        if self._is_real_home_tab_selected():
-            return "home_feed"
-
         return "unknown"
+
+    def _is_real_home_context(self, low_xml: str | None = None) -> bool:
+        low = low_xml if low_xml is not None else self._visible_hierarchy().lower()
+        explicit_home_terms = (
+            "start a post",
+            "start a professional update",
+            "share your thoughts",
+            "what do you want to talk about",
+        )
+        if any(term in low for term in explicit_home_terms):
+            return True
+        non_home_terms = (
+            "show all results", "see all results", "all filters", "connection degree",
+            "people you may know", "manage my network", "invitations", "grow your network",
+            "search messages", "conversations", "notification", "notifications",
+        )
+        if "recommended for you" in low and not any(term in low for term in non_home_terms):
+            return True
+        return self._is_real_home_tab_selected() and not any(term in low for term in non_home_terms)
 
     def _is_real_home_tab_selected(self) -> bool:
         try:
@@ -522,6 +543,8 @@ class AndroidMockSiteDriver:
 
     def _has_results_or_typeahead_signal(self, low_xml: str | None = None) -> bool:
         low = low_xml if low_xml is not None else self._visible_hierarchy().lower()
+        if self._is_real_linkedin_app() and self._is_real_home_context(low):
+            return False
         if any(term in low for term in ("show all results", "see all results", "search results", "people results")):
             return True
         if any(self.rid(name).lower() in low for name in ("results_list", "person_result")):
@@ -2052,6 +2075,8 @@ class AndroidMockSiteDriver:
         return opened
 
     def _visible_profile_result_selectors(self):
+        if self._is_real_linkedin_app() and self._is_real_home_context():
+            return []
         selectors = []
         seen: set[str] = set()
         candidates = []
@@ -2207,6 +2232,9 @@ class AndroidMockSiteDriver:
             pass
 
     def _extract_people_result_candidates(self, search_query: str, page: int) -> list[Candidate]:
+        if self._is_real_linkedin_app() and self._is_real_home_context():
+            self.logger.log("candidate_extract", search_query, "skipped", "home_recommendations_not_search_results")
+            return []
         row_windows = [str(item.get("text") or "") for item in self._visible_profile_result_selectors() if str(item.get("text") or "").strip()]
         blocks = self._visible_result_text_blocks()
         candidates: list[Candidate] = []
