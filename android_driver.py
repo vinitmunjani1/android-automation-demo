@@ -53,6 +53,9 @@ class AndroidMockSiteDriver:
         self._last_page_signature = ""
         self._same_page_count = 0
         self._stuck_recovery_count = 0
+        self._feed_likes_this_run = 0
+        self._last_feed_like_at = 0.0
+        self._liked_feed_post_signatures: set[str] = set()
 
     def delay(self, multiplier: float = 1.0) -> None:
         lo = float(self.config["delay_min_seconds"])
@@ -785,6 +788,13 @@ class AndroidMockSiteDriver:
             float(self.human.get("feed_read_max_seconds", 5.2)),
         )
 
+        if self.target == "app":
+            self.think(
+                float(self.config.get("feed_like_after_scroll_min_seconds", 0.8)),
+                float(self.config.get("feed_like_after_scroll_max_seconds", 2.4)),
+            )
+            self._maybe_like_visible_feed_post(index)
+
         if self.target == "app" and random.random() < float(self.config.get("feed_profile_open_probability", 0.18)):
             if self._open_profile_from_feed():
                 self.logger.log("open_profile_from_feed", f"visible_post_{index}", "success", "random feed profile open")
@@ -794,7 +804,7 @@ class AndroidMockSiteDriver:
             else:
                 self.logger.log("open_profile_from_feed", f"visible_post_{index}", "not_found", "no visible feed profile link")
 
-        if random.random() < float(self.config["like_probability"]):
+        if self.target != "app" and random.random() < float(self.config["like_probability"]):
             self.think(0.5, 1.7)
             if self._click_like_button():
                 self.logger.log("like_post", f"visible_post_{index}")
@@ -1169,6 +1179,176 @@ class AndroidMockSiteDriver:
         points[0] = (start_x, start_y)
         points[-1] = (end_x, end_y)
         return points
+
+    def _maybe_like_visible_feed_post(self, feed_index: int) -> bool:
+        if self.target != "app":
+            return False
+        current_page = self._current_mock_page_name()
+        if current_page != "home_feed":
+            self.logger.log("feed_like_skipped", f"feed_{feed_index}", "not_home", f"page={current_page}")
+            return False
+
+        max_likes = int(self.config.get("max_feed_likes_per_run", 3))
+        if self._feed_likes_this_run >= max_likes:
+            self.logger.log("feed_like_limit_reached", f"feed_{feed_index}", "skipped", f"likes={self._feed_likes_this_run},limit={max_likes}")
+            return False
+
+        cooldown = float(self.config.get("feed_like_min_cooldown_seconds", 45))
+        elapsed = time.time() - self._last_feed_like_at if self._last_feed_like_at else None
+        if elapsed is not None and elapsed < cooldown:
+            self.logger.log("feed_like_skipped", f"feed_{feed_index}", "cooldown", f"elapsed={elapsed:.1f},cooldown={cooldown:.1f}")
+            return False
+
+        like_probability = float(self.config.get("feed_like_probability", self.config.get("like_probability", 0.20)))
+        if random.random() >= like_probability:
+            self.logger.log("feed_like_skipped", f"feed_{feed_index}", "random_window_skip", f"like_probability={like_probability}")
+            return False
+
+        self.think(
+            float(self.config.get("feed_like_read_min_seconds", 2.5)),
+            float(self.config.get("feed_like_read_max_seconds", 7.5)),
+        )
+
+        targets = self._visible_feed_post_like_targets()
+        self.logger.log("feed_like_candidate_count", f"feed_{feed_index}", "observed", f"count={len(targets)}")
+        if not targets:
+            self.logger.log("feed_like_skipped", f"feed_{feed_index}", "not_found", "no_eligible_like_buttons")
+            return False
+
+        max_per_action = int(self.config.get("max_feed_likes_per_action", 1))
+        liked_this_action = 0
+        for target in random.sample(targets[: min(len(targets), 3)], k=min(len(targets), 3)):
+            if liked_this_action >= max_per_action:
+                break
+            signature = str(target.get("signature") or "")
+            if signature in self._liked_feed_post_signatures:
+                self.logger.log("feed_like_skipped", f"feed_{feed_index}", "duplicate", signature[:80])
+                continue
+            post_skip_probability = float(self.config.get("feed_like_skip_probability", 0.55))
+            if random.random() < post_skip_probability:
+                self.logger.log("feed_like_skipped", f"feed_{feed_index}", "post_skip", f"skip_probability={post_skip_probability},signature={signature[:80]}")
+                continue
+            if not self._click_feed_like_target(target):
+                self.logger.log("feed_like_skipped", f"feed_{feed_index}", "click_failed", signature[:80])
+                continue
+            self._liked_feed_post_signatures.add(signature)
+            self._feed_likes_this_run += 1
+            self._last_feed_like_at = time.time()
+            liked_this_action += 1
+            self.logger.log("feed_like_clicked", f"feed_{feed_index}", "clicked", f"post_signature={signature[:120]},likes_this_run={self._feed_likes_this_run}")
+            self.think(
+                float(self.config.get("feed_like_after_click_min_seconds", 1.2)),
+                float(self.config.get("feed_like_after_click_max_seconds", 3.6)),
+            )
+            return True
+
+        self.logger.log("feed_like_skipped", f"feed_{feed_index}", "no_post_selected", "all_candidates_skipped")
+        return False
+
+    def _visible_feed_post_like_targets(self) -> list[dict]:
+        if self.target != "app" or self._current_mock_page_name() != "home_feed":
+            return []
+        targets: list[dict] = []
+        seen: set[str] = set()
+        try:
+            width, height = self.d.window_size()
+        except Exception:
+            width, height = 0, 0
+
+        for class_name in ("android.widget.Button", "android.widget.TextView", "android.view.ViewGroup", "android.view.View"):
+            try:
+                nodes = list(self.d(className=class_name))
+            except Exception:
+                nodes = []
+            for node in nodes:
+                try:
+                    info = node.info or {}
+                    text = self._xml_unescape(" ".join(str(info.get(key) or "") for key in ("text", "contentDescription")).strip())
+                    target = self._feed_like_target_from_info(text, info, width, height)
+                    if not target:
+                        continue
+                    if target["signature"] in seen:
+                        continue
+                    seen.add(target["signature"])
+                    targets.append(target)
+                except Exception:
+                    pass
+
+        targets.extend(self._visible_feed_post_like_targets_from_xml(seen, width, height))
+        return sorted(targets, key=lambda item: (int(item.get("y", 0)), int(item.get("x", 0))))
+
+    def _visible_feed_post_like_targets_from_xml(self, seen: set[str], width: int, height: int) -> list[dict]:
+        targets: list[dict] = []
+        xml = self._visible_hierarchy()
+        for match in re.finditer(r"<node\b[^>]*>", xml):
+            attrs = dict(re.findall(r'([\w-]+)="([^"]*)"', match.group(0)))
+            label = self._xml_unescape(" ".join(part for part in [attrs.get("text", ""), attrs.get("content-desc", "")] if part).strip())
+            bounds_text = attrs.get("bounds", "")
+            bounds_match = re.match(r"\[(\d+),(\d+)\]\[(\d+),(\d+)\]", bounds_text)
+            if not bounds_match:
+                continue
+            left, top, right, bottom = [int(value) for value in bounds_match.groups()]
+            info = {"bounds": {"left": left, "top": top, "right": right, "bottom": bottom}, "text": label, "contentDescription": label}
+            target = self._feed_like_target_from_info(label, info, width, height)
+            if not target or target["signature"] in seen:
+                continue
+            seen.add(target["signature"])
+            targets.append(target)
+        return targets
+
+    def _feed_like_target_from_info(self, label: str, info: dict, width: int, height: int) -> dict | None:
+        if not self._is_eligible_feed_like_label(label):
+            return None
+        if info.get("selected") or info.get("checked"):
+            return None
+        bounds = info.get("bounds") or {}
+        left = int(bounds.get("left", 0))
+        right = int(bounds.get("right", 0))
+        top = int(bounds.get("top", 0))
+        bottom = int(bounds.get("bottom", 0))
+        if right <= left or bottom <= top:
+            return None
+        center_x = (left + right) // 2
+        center_y = (top + bottom) // 2
+        if width and center_x > int(width * 0.58):
+            return None
+        if height and not (int(height * 0.24) <= center_y <= int(height * 0.84)):
+            return None
+        signature = self._feed_like_signature(label, bounds)
+        return {"x": center_x, "y": center_y, "bounds": bounds, "label": label, "signature": signature}
+
+    def _is_eligible_feed_like_label(self, label: str) -> bool:
+        clean = re.sub(r"\s+", " ", label.strip()).lower()
+        if not clean:
+            return False
+        if any(term in clean for term in ("liked", "unlike", "likes", "comment", "reply", "notification")):
+            return False
+        return clean == "like" or clean.startswith("like ") or clean.startswith("like,") or "react like" in clean
+
+    def _feed_like_signature(self, label: str, bounds: dict) -> str:
+        center_y = (int(bounds.get("top", 0)) + int(bounds.get("bottom", 0))) // 2
+        center_x = (int(bounds.get("left", 0)) + int(bounds.get("right", 0))) // 2
+        return f"{self._page_signature()}|{label.strip().lower()[:40]}|x={center_x // 40}|y={center_y // 40}"
+
+    def _click_feed_like_target(self, target: dict) -> bool:
+        try:
+            bounds = target.get("bounds") or {}
+            left = int(bounds.get("left", target.get("x", 0)))
+            right = int(bounds.get("right", target.get("x", 0)))
+            top = int(bounds.get("top", target.get("y", 0)))
+            bottom = int(bounds.get("bottom", target.get("y", 0)))
+            width = max(1, right - left)
+            height = max(1, bottom - top)
+            min_x = left + int(width * 0.30)
+            max_x = right - max(1, int(width * 0.20))
+            min_y = top + int(height * 0.25)
+            max_y = bottom - max(1, int(height * 0.20))
+            x = random.randint(min_x, max_x) if width > 8 and min_x <= max_x else int(target["x"])
+            y = random.randint(min_y, max_y) if height > 8 and min_y <= max_y else int(target["y"])
+            self.d.click(x, y)
+            return True
+        except Exception:
+            return False
 
     def _click_like_button(self) -> bool:
         if self.target == "app":

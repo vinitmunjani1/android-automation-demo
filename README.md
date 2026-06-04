@@ -109,6 +109,16 @@ By default, `config.json` uses:
 "action_order": "random"
 ```
 
-That makes each run choose a different bounded sequence of mock actions: feed reading, scrolling, likes, searches, profile visits, home navigation, and idle pauses. Set it back to `"sequential"` if you want the older feed-then-search flow.
+That makes each run choose a different bounded sequence of actions: feed reading, scrolling, bounded likes, searches, profile visits, home navigation, and idle pauses. Set it back to `"sequential"` if you want the older feed-then-search flow.
 
-> This driver is intentionally scoped to the included mock site/app. It should not be pointed at LinkedIn or used for real-platform auto-engagement.
+Feed likes are deliberately conservative. The Android driver only considers Like targets while Home is active, skips most visible posts, enforces cooldowns/caps, avoids already-liked targets, and logs why it skipped or clicked:
+
+```json
+"feed_like_probability": 0.35,
+"feed_like_skip_probability": 0.55,
+"feed_like_min_cooldown_seconds": 45,
+"max_feed_likes_per_run": 3,
+"max_feed_likes_per_action": 1
+```
+
+Mock-only engagement actions remain scoped to the included mock site/app. Real LinkedIn runs keep coordinate connect fallbacks and auto-connect disabled unless explicitly enabled in config.
