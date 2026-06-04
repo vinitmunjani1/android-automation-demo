@@ -99,8 +99,11 @@ class AndroidMockSiteDriver:
                 self.logger.log("search_person", contact.name, "failed", "search input missing")
                 continue
             self.think(0.2, 0.8)
-            self._type_text_human(contact.name)
-            self.logger.log("search_person", contact.name, "success", "typed_humanized=true")
+            if not self._type_text_human(contact.name):
+                self.logger.log("search_person", contact.name, "failed", "typing_not_verified")
+                self._leave_search_page(contact.name)
+                continue
+            self.logger.log("search_person", contact.name, "success", "typed_humanized=true,verified=true")
             self.think(1.2, 3.0)
             self._open_all_search_results(contact.name)
             self._apply_candidate_search_filters(contact.name)
@@ -166,8 +169,11 @@ class AndroidMockSiteDriver:
             self.logger.log("candidate_search", search_query, "failed", "search input missing")
             return []
 
-        self._type_text_human(search_query)
-        self.logger.log("candidate_search", search_query, "success", "typed_humanized=true")
+        if not self._type_text_human(search_query):
+            self.logger.log("candidate_search", search_query, "failed", "typing_not_verified")
+            self._leave_search_page(search_query)
+            return []
+        self.logger.log("candidate_search", search_query, "success", "typed_humanized=true,verified=true")
         self.think(1.2, 2.8)
 
         discovery_config = self.config.get("candidate_discovery", {})
@@ -560,8 +566,11 @@ class AndroidMockSiteDriver:
             self.logger.log("search_person", contact.name, "failed", "search input missing")
             return
         self.think(0.2, 0.8)
-        self._type_text_human(contact.name)
-        self.logger.log("search_person", contact.name, "success", "typed_humanized=true")
+        if not self._type_text_human(contact.name):
+            self.logger.log("search_person", contact.name, "failed", "typing_not_verified")
+            self._leave_search_page(contact.name)
+            return
+        self.logger.log("search_person", contact.name, "success", "typed_humanized=true,verified=true")
         # Do not press Back here. On some Android devices the keyboard is not
         # considered open after adb text input, so Back closes the mock app.
         self.think(1.2, 3.0)
@@ -1893,6 +1902,8 @@ class AndroidMockSiteDriver:
             width, height = 0, 0
         try:
             candidates.extend(list(self.d(className="android.widget.TextView")))
+            candidates.extend(list(self.d(className="android.view.ViewGroup")))
+            candidates.extend(list(self.d(className="android.widget.Button")))
         except Exception:
             pass
         for selector in candidates:
@@ -1917,6 +1928,33 @@ class AndroidMockSiteDriver:
                 selectors.append({"signature": signature, "x": x, "y": y, "text": text})
             except Exception:
                 pass
+        selectors.extend(self._visible_profile_result_selectors_from_xml(seen, width, height))
+        return sorted(selectors, key=lambda item: (int(item.get("y", 0)), str(item.get("signature", ""))))
+
+    def _visible_profile_result_selectors_from_xml(self, seen: set[str], width: int, height: int) -> list[dict]:
+        selectors: list[dict] = []
+        xml = self._visible_hierarchy()
+        for match in re.finditer(r"<node\b[^>]*>", xml):
+            tag = match.group(0)
+            attrs = dict(re.findall(r'([\w-]+)="([^"]*)"', tag))
+            text = self._xml_unescape(" ".join(part for part in [attrs.get("text", ""), attrs.get("content-desc", "")] if part).strip())
+            if not self._looks_like_profile_result_text(text):
+                continue
+            bounds_text = attrs.get("bounds", "")
+            bounds_match = re.match(r"\[(\d+),(\d+)\]\[(\d+),(\d+)\]", bounds_text)
+            if not bounds_match:
+                continue
+            left, top, right, bottom = [int(value) for value in bounds_match.groups()]
+            info = {"bounds": {"left": left, "top": top, "right": right, "bottom": bottom}, "text": text}
+            if not self._looks_like_result_row_bounds(info, width, height):
+                continue
+            signature = f"{text[:120]}|{bounds_text}"
+            if signature in seen:
+                continue
+            seen.add(signature)
+            x = max(int(width * 0.18), min(int(width * 0.62), left + int((right - left) * 0.35))) if width else (left + right) // 2
+            y = max(int(height * 0.24), min(int(height * 0.84), (top + bottom) // 2)) if height else (top + bottom) // 2
+            selectors.append({"signature": signature, "x": x, "y": y, "text": text})
         return selectors
 
     def _looks_like_profile_result_text(self, text: str) -> bool:
@@ -1986,10 +2024,12 @@ class AndroidMockSiteDriver:
                 pass
             try:
                 xml = self._visible_hierarchy().lower()
-                if any(noise in xml for noise in ("show all results", "see all results", self.rid("results_list").lower())):
-                    return False
                 has_action = any(term in xml for term in ("connect", "follow", "message"))
                 has_profile_section = any(term in xml for term in ("about", "activity", "experience", "education"))
+                if has_action and has_profile_section:
+                    return True
+                if any(noise in xml for noise in ("show all results", "see all results", self.rid("results_list").lower())):
+                    return False
                 return has_action and has_profile_section
             except Exception:
                 return False
@@ -2032,13 +2072,12 @@ class AndroidMockSiteDriver:
                     blocks.append(text)
         except Exception:
             pass
-        if not blocks:
-            xml = self._visible_hierarchy()
-            values = re.findall(r'text="([^"]+)"|content-desc="([^"]+)"', xml)
-            for left, right in values:
-                text = self._xml_unescape(left or right)
-                if self._is_candidate_result_text(text):
-                    blocks.append(text)
+        xml = self._visible_hierarchy()
+        values = re.findall(r'text="([^"]+)"|content-desc="([^"]+)"', xml)
+        for left, right in values:
+            text = self._xml_unescape(left or right)
+            if self._is_candidate_result_text(text):
+                blocks.append(text)
         return self._dedupe_text_blocks(blocks)
 
     def _is_candidate_result_text(self, text: str) -> bool:
@@ -2105,11 +2144,11 @@ class AndroidMockSiteDriver:
         cleared: list[str] = []
         configured = [str(label) for label in self.config.get("candidate_discovery", {}).get("connection_filters", ["1st", "2nd"])]
 
-        # On LinkedIn result pages selected connection chips are usually visible;
-        # tapping them again removes the filter. This keeps the existing People
-        # result set in place instead of bouncing Home and losing profiles.
+        # On LinkedIn result pages selected connection chips are usually visible
+        # near the top filter row. Only tap those top chips; broad textContains
+        # matches can hit "1st/2nd" badges inside profile rows.
         for label in configured:
-            if self._click_filter_option(label, timeout=0.25):
+            if self._click_top_filter_chip(label, timeout=0.25):
                 cleared.append(label)
                 self.think(0.25, 0.7)
         if cleared:
@@ -2197,9 +2236,10 @@ class AndroidMockSiteDriver:
         configured = [str(label) for label in self.config.get("candidate_discovery", {}).get("connection_filters", ["1st", "2nd"])]
 
         # Some LinkedIn result layouts expose 1st/2nd as chips directly after
-        # tapping People. Select those first before trying the full filter sheet.
+        # tapping People. Select only top filter chips; result rows also contain
+        # 1st/2nd badges and must not be tapped here.
         for label in configured:
-            if self._click_filter_option(label, timeout=0.35):
+            if self._click_top_filter_chip(label, timeout=0.35):
                 selected.append(label)
                 self.think(0.2, 0.6)
         if selected:
@@ -2225,6 +2265,12 @@ class AndroidMockSiteDriver:
         return selected
 
     def _open_connection_filter_menu(self, search_query: str) -> bool:
+        for label in ("Connections", "Connection degree", "All filters", "Filters"):
+            if self._click_top_filter_chip(label, timeout=0.35, fuzzy=True):
+                self.think(0.6, 1.2)
+                self.logger.log("search_filter_connections", search_query, "opened", f"top_chip={label}")
+                return True
+
         selectors = [
             self.d(text="Connections"),
             self.d(textContains="Connections"),
@@ -2242,7 +2288,7 @@ class AndroidMockSiteDriver:
         for attempt in range(1, 3):
             for selector in selectors:
                 try:
-                    if selector.exists(timeout=0.8):
+                    if selector.exists(timeout=0.8) and self._selector_is_top_filter_chip(selector):
                         selector.click()
                         self.think(0.6, 1.2)
                         self.logger.log("search_filter_connections", search_query, "opened", f"selector_attempt={attempt}")
@@ -2265,6 +2311,43 @@ class AndroidMockSiteDriver:
                 pass
         self.logger.log("search_filter_connections", search_query, "not_found", "continuing")
         return False
+
+    def _click_top_filter_chip(self, label: str, timeout: float = 0.5, fuzzy: bool = False) -> bool:
+        option_texts = [label, f"{label} connections", f"{label} degree", f"{label}-degree"]
+        selectors = []
+        for text in option_texts:
+            selectors.extend([self.d(text=text), self.d(description=text)])
+            if fuzzy:
+                selectors.extend([self.d(textContains=text), self.d(descriptionContains=text)])
+        for selector in selectors:
+            try:
+                if selector.exists(timeout=timeout) and self._selector_is_top_filter_chip(selector):
+                    selector.click()
+                    return True
+            except Exception:
+                pass
+        return False
+
+    def _selector_is_top_filter_chip(self, selector) -> bool:
+        try:
+            info = selector.info or {}
+            width, height = self.d.window_size()
+            return self._bounds_are_top_filter_chip(info.get("bounds") or {}, width, height)
+        except Exception:
+            return False
+
+    def _bounds_are_top_filter_chip(self, bounds: dict, width: int, height: int) -> bool:
+        if not height:
+            return False
+        top = int(bounds.get("top", 0))
+        bottom = int(bounds.get("bottom", 0))
+        left = int(bounds.get("left", 0))
+        right = int(bounds.get("right", 0))
+        if bottom <= top or right <= left:
+            return False
+        center_y = (top + bottom) // 2
+        center_x = (left + right) // 2
+        return int(height * 0.09) <= center_y <= int(height * 0.24) and int(width * 0.03) <= center_x <= int(width * 0.97)
 
     def _horizontal_filter_chip_scroll(self) -> None:
         try:
@@ -2402,6 +2485,19 @@ class AndroidMockSiteDriver:
                         continue
             except Exception:
                 pass
+
+        for target in self._visible_profile_result_selectors()[:5]:
+            try:
+                self.d.click(int(target["x"]), int(target["y"]))
+                self.think(0.9, 1.8)
+                if self._looks_like_open_profile():
+                    self.logger.log("search_result_click", name, "opened", f"row_target={target.get('text', '')[:80]}")
+                    return True
+                if self._is_search_page_open(timeout=0.3):
+                    self.logger.log("search_result_click", name, "rejected", "row_target_still_on_search_page")
+                    continue
+            except Exception:
+                pass
         return False
 
     def _go_home(self) -> bool:
@@ -2470,11 +2566,8 @@ class AndroidMockSiteDriver:
                     except Exception:
                         search.click()
                     self.think(0.2, 0.6)
-                    try:
-                        search.clear_text()
-                    except Exception:
-                        self.d.clear_text()
-                    return True
+                    self._clear_focused_text_field()
+                    return self._confirm_text_entry_focus("resource_id_search_input")
             except Exception:
                 pass
 
@@ -2489,8 +2582,8 @@ class AndroidMockSiteDriver:
                     if candidate.exists(timeout=0.7):
                         candidate.click()
                         self.think(0.2, 0.6)
-                        self.d.clear_text()
-                        return True
+                        self._clear_focused_text_field()
+                        return self._confirm_text_entry_focus("selector_search_input")
                 except Exception:
                     pass
 
@@ -2501,11 +2594,8 @@ class AndroidMockSiteDriver:
             y = int(height * random.uniform(0.045, 0.085))
             self.d.click(x, y)
             time.sleep(random.uniform(0.35, 0.9))
-            try:
-                self.d.clear_text()
-            except Exception:
-                pass
-            return True
+            self._clear_focused_text_field()
+            return self._confirm_text_entry_focus("coordinate_search_input")
 
         candidates = [
             self.d(description="Search people"),
@@ -2517,10 +2607,67 @@ class AndroidMockSiteDriver:
                 if candidate.exists(timeout=0.7):
                     candidate.click()
                     self.think(0.2, 0.6)
-                    self.d.clear_text()
+                    self._clear_focused_text_field()
                     return True
             except Exception:
                 pass
+        return False
+
+    def _clear_focused_text_field(self) -> None:
+        try:
+            self.d.clear_text()
+            self.think(0.1, 0.25)
+        except Exception:
+            try:
+                focused = self.d(focused=True)
+                if focused.exists(timeout=0.2):
+                    focused.clear_text()
+                    self.think(0.1, 0.25)
+            except Exception:
+                pass
+
+    def _confirm_text_entry_focus(self, label: str) -> bool:
+        if self.target != "app" or not self._is_real_linkedin_app():
+            return True
+        deadline = time.time() + 1.2
+        while time.time() < deadline:
+            try:
+                focused = self.d(focused=True)
+                if focused.exists(timeout=0.15):
+                    info = focused.info or {}
+                    class_name = str(info.get("className") or "")
+                    visible_label = " ".join(str(info.get(key) or "") for key in ("text", "contentDescription")).lower()
+                    if "edittext" in class_name.lower() or "search" in visible_label:
+                        self.logger.log("search_focus", label, "verified", class_name or visible_label[:80])
+                        return True
+            except Exception:
+                pass
+            try:
+                if self.d(className="android.widget.EditText", focused=True).exists(timeout=0.15):
+                    self.logger.log("search_focus", label, "verified", "focused_edittext")
+                    return True
+            except Exception:
+                pass
+            try:
+                edit = self.d(className="android.widget.EditText")
+                if edit.exists(timeout=0.15):
+                    info = edit.info or {}
+                    width, height = self.d.window_size()
+                    bounds = info.get("bounds") or {}
+                    top = int(bounds.get("top", 0))
+                    bottom = int(bounds.get("bottom", 0))
+                    center_y = (top + bottom) // 2 if bottom > top else 0
+                    if center_y and center_y <= int(height * 0.22):
+                        self.logger.log("search_focus", label, "verified", "top_edittext_visible")
+                        return True
+            except Exception:
+                pass
+            xml = self._visible_hierarchy()
+            if re.search(r'class="android\.widget\.EditText"[^>]*focused="true"', xml):
+                self.logger.log("search_focus", label, "verified", "hierarchy_focused_edittext")
+                return True
+            self.think(0.12, 0.25)
+        self.logger.log("search_focus", label, "failed", "no_focused_text_field")
         return False
 
     def _click_text(self, text: str) -> bool:
@@ -2559,10 +2706,9 @@ class AndroidMockSiteDriver:
                 pass
         return False
 
-    def _type_text_human(self, text: str) -> None:
+    def _type_text_human(self, text: str) -> bool:
         if self.target == "app" and self._is_real_linkedin_app():
-            self._type_text_human_real_app(text)
-            return
+            return self._type_text_human_real_app(text)
 
         typo_probability = float(self.human.get("typo_probability", 0.0))
         rethink_probability = float(self.human.get("typing_rethink_probability", 0.0))
@@ -2593,31 +2739,67 @@ class AndroidMockSiteDriver:
 
             if char == " " or (index > 1 and random.random() < 0.12):
                 time.sleep(random.uniform(0.25, 0.9))
+        return True
 
-    def _type_text_human_real_app(self, text: str) -> None:
+    def _type_text_human_real_app(self, text: str) -> bool:
         """Human-paced text entry for real LinkedIn runs.
 
         Keep it safe for the real app: type progressively with varied pauses but
         avoid typo/rethink loops that can accidentally trigger keyboard actions.
         """
-        chunk_probability = float(self.human.get("real_app_typing_chunk_probability", 0.22))
-        min_delay = float(self.human.get("typing_delay_min_seconds", 0.09))
-        max_delay = float(self.human.get("typing_delay_max_seconds", 0.28))
-        index = 0
-        while index < len(text):
-            if text[index] != " " and random.random() < chunk_probability:
-                chunk = text[index : min(len(text), index + random.randint(2, 4))]
-                if " " in chunk:
-                    chunk = chunk.split(" ", 1)[0]
-                self._input_text_token(chunk)
-                index += len(chunk)
-                time.sleep(random.uniform(min_delay * 1.4, max_delay * 2.2))
-                continue
-            self._input_text_token(text[index])
-            index += 1
-            time.sleep(random.uniform(min_delay, max_delay))
-            if index > 1 and (text[index - 1] == " " or random.random() < 0.10):
-                time.sleep(random.uniform(0.20, 0.65))
+        min_delay = float(self.human.get("real_app_typing_delay_min_seconds", self.human.get("typing_delay_min_seconds", 0.12)))
+        max_delay = float(self.human.get("real_app_typing_delay_max_seconds", self.human.get("typing_delay_max_seconds", 0.32)))
+        chunk_probability = float(self.human.get("real_app_typing_chunk_probability", 0.0))
+        for attempt in range(1, 3):
+            if attempt > 1:
+                self._clear_focused_text_field()
+                self.think(0.2, 0.45)
+            index = 0
+            while index < len(text):
+                if text[index] != " " and chunk_probability > 0 and random.random() < chunk_probability:
+                    chunk = text[index : min(len(text), index + random.randint(2, 3))]
+                    if " " in chunk:
+                        chunk = chunk.split(" ", 1)[0]
+                    self._input_text_token(chunk)
+                    index += len(chunk)
+                    time.sleep(random.uniform(min_delay * 1.4, max_delay * 2.0))
+                    continue
+                self._input_text_token(text[index])
+                index += 1
+                time.sleep(random.uniform(min_delay, max_delay))
+                if index > 1 and (text[index - 1] == " " or random.random() < 0.12):
+                    time.sleep(random.uniform(0.22, 0.75))
+            if self._typed_text_visible(text):
+                self.logger.log("typing_verify", text[:40], "success", f"attempt={attempt}")
+                return True
+            self.logger.log("typing_verify", text[:40], "retrying" if attempt == 1 else "failed", f"attempt={attempt}")
+        return False
+
+    def _typed_text_visible(self, expected: str, timeout_seconds: float = 1.8) -> bool:
+        expected_clean = re.sub(r"\s+", " ", expected.strip()).lower()
+        if not expected_clean:
+            return True
+        deadline = time.time() + timeout_seconds
+        while time.time() < deadline:
+            for selector in [self.d(focused=True), self.d(className="android.widget.EditText")]:
+                try:
+                    if selector.exists(timeout=0.15):
+                        info = selector.info or {}
+                        visible = " ".join(str(info.get(key) or "") for key in ("text", "contentDescription")).lower()
+                        if expected_clean in re.sub(r"\s+", " ", visible):
+                            return True
+                except Exception:
+                    pass
+            try:
+                if self.d(textContains=expected).exists(timeout=0.15) or self.d(descriptionContains=expected).exists(timeout=0.15):
+                    return True
+            except Exception:
+                pass
+            xml = self._visible_hierarchy().lower()
+            if expected_clean in re.sub(r"\s+", " ", self._xml_unescape(xml)):
+                return True
+            self.think(0.15, 0.30)
+        return False
 
     def _input_text_token(self, token: str) -> None:
         escaped = token.replace("%", "%25").replace(" ", "%s")
