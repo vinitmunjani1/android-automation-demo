@@ -423,7 +423,10 @@ class AndroidMockSiteDriver:
         query = self._active_search_query or "search_results"
         self._ensure_filter_sheet_closed(query)
         if self._has_no_search_results_visible():
-            self.logger.log("search_results_handler", f"step_{step}", "empty", "no_results_found")
+            if self._handle_no_results_page(query):
+                self.logger.log("search_results_handler", f"step_{step}", "recovered", "removed_filters_retry")
+                return True
+            self.logger.log("search_results_handler", f"step_{step}", "empty", "no_results_found_after_recovery")
             self._leave_search_page(query)
             return True
         if self._open_one_random_profile_result_and_score(query):
@@ -432,7 +435,10 @@ class AndroidMockSiteDriver:
         self._safe_results_scroll_down()
         self.think(0.8, 1.8)
         if self._has_no_search_results_visible():
-            self.logger.log("search_results_handler", f"step_{step}", "empty_after_scroll", "no_results_found")
+            if self._handle_no_results_page(query):
+                self.logger.log("search_results_handler", f"step_{step}", "recovered_after_scroll", "removed_filters_retry")
+                return True
+            self.logger.log("search_results_handler", f"step_{step}", "empty_after_scroll", "no_results_found_after_recovery")
             self._leave_search_page(query)
         elif before == self._page_signature():
             self.logger.log("search_results_handler", f"step_{step}", "no_progress", "return_home")
@@ -699,6 +705,8 @@ class AndroidMockSiteDriver:
         low = low_xml if low_xml is not None else self._visible_hierarchy().lower()
         if self._is_real_linkedin_app() and self._is_real_home_context(low):
             return False
+        if self._has_no_search_results_visible(low):
+            return True
         if any(term in low for term in ("show all results", "see all results", "search results", "people results")):
             return True
         if any(self.rid(name).lower() in low for name in ("results_list", "person_result")):
@@ -2553,16 +2561,66 @@ class AndroidMockSiteDriver:
             self.think(0.8, 1.6)
         return scored
 
-    def _has_no_search_results_visible(self) -> bool:
-        low = self._visible_hierarchy().lower()
+    def _has_no_search_results_visible(self, low_xml: str | None = None) -> bool:
+        low = low_xml if low_xml is not None else self._visible_hierarchy().lower()
         no_result_terms = (
             "no results found",
             "no results",
             "couldn't find any results",
             "try a different keyword",
             "try different keywords",
+            "remove all filters",
+            "edit search",
         )
         return any(term in low for term in no_result_terms)
+
+    def _handle_no_results_page(self, search_query: str) -> bool:
+        if not self._has_no_search_results_visible():
+            return False
+        self.logger.log("no_results_handler", search_query, "started", "remove_filters_then_people_only")
+        removed = self._click_remove_all_filters(search_query)
+        if removed:
+            self.think(1.0, 2.0)
+            # LinkedIn can clear the People vertical too. Re-apply only People
+            # and do not re-apply 1st/2nd connection filters.
+            self._select_people_results_filter(search_query)
+            self._ensure_filter_sheet_closed(search_query)
+            visible = self._wait_for_profile_results(search_query, timeout_seconds=5.0)
+            if visible and not self._has_no_search_results_visible():
+                self.logger.log("no_results_handler", search_query, "success", "profiles_visible_after_remove_filters")
+                return True
+            self.logger.log("no_results_handler", search_query, "empty", "still_no_results_after_remove_filters")
+            return False
+        self.logger.log("no_results_handler", search_query, "failed", "remove_all_filters_not_found")
+        return False
+
+    def _click_remove_all_filters(self, search_query: str) -> bool:
+        selectors = [
+            self.d(text="Remove all filters"),
+            self.d(textContains="Remove all filters"),
+            self.d(description="Remove all filters"),
+            self.d(descriptionContains="Remove all filters"),
+        ]
+        for selector in selectors:
+            try:
+                if selector.exists(timeout=0.7):
+                    selector.click()
+                    self.logger.log("no_results_remove_filters", search_query, "clicked", "selector")
+                    return True
+            except Exception:
+                pass
+        try:
+            width, height = self.d.window_size()
+            # In the no-results screen the blue Remove all filters button is in
+            # the lower center/right under the illustration. Use only when the
+            # text is visible so this does not become a random tap.
+            if "remove all filters" in self._visible_hierarchy().lower():
+                self.d.click(int(width * 0.62), int(height * 0.48))
+                self.logger.log("no_results_remove_filters", search_query, "clicked", "coordinate_fallback")
+                return True
+        except Exception:
+            pass
+        return False
 
     def _open_one_random_profile_result_and_score(self, search_query: str) -> bool:
         targets = self._visible_profile_result_selectors()
@@ -2590,6 +2648,8 @@ class AndroidMockSiteDriver:
 
     def _visible_profile_result_selectors(self):
         if self._is_real_linkedin_app() and self._is_real_home_context():
+            return []
+        if self._has_no_search_results_visible():
             return []
         selectors = []
         seen: set[str] = set()
@@ -2895,7 +2955,7 @@ class AndroidMockSiteDriver:
     def _wait_for_profile_results(self, search_query: str, timeout_seconds: float = 4.0) -> bool:
         deadline = time.time() + timeout_seconds
         while time.time() < deadline:
-            if self._visible_profile_result_selectors() or self._extract_people_result_candidates(search_query, page=0):
+            if not self._has_no_search_results_visible() and (self._visible_profile_result_selectors() or self._extract_people_result_candidates(search_query, page=0)):
                 self.logger.log("candidate_search_results_wait", search_query, "success", "profiles_visible")
                 return True
             self.think(0.4, 0.8)
