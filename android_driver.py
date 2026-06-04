@@ -106,14 +106,20 @@ class AndroidMockSiteDriver:
             self._apply_candidate_search_filters(contact.name)
             if self._collect_search_results_instead_of_opening():
                 collected = self._collect_and_score_visible_search_results(contact.name)
+                if collected == 0 and self._retry_search_with_profile_filter_only(contact.name):
+                    collected = self._collect_and_score_visible_search_results(contact.name)
+                    self.logger.log("candidate_results_profile_only_retry", contact.name, "success", f"candidates={collected}")
                 self.logger.log("candidate_results_ranked", contact.name, "success", f"candidates={collected}")
                 self.action_transition_pause()
                 continue
 
             if not self._click_contact(contact.name):
-                self.logger.log("open_profile", contact.name, "not_found")
-                self._leave_search_page(contact.name)
-                continue
+                if self._retry_search_with_profile_filter_only(contact.name) and self._click_contact(contact.name):
+                    self.logger.log("open_profile", contact.name, "fallback_success", "profile_filter_only")
+                else:
+                    self.logger.log("open_profile", contact.name, "not_found")
+                    self._leave_search_page(contact.name)
+                    continue
             self.logger.log("open_profile", contact.name, "success", f"{contact.title} at {contact.company}")
             self._analyze_open_profile(contact.name)
             scored_candidate = self._score_open_profile_candidate(contact.name)
@@ -561,14 +567,20 @@ class AndroidMockSiteDriver:
         self._apply_candidate_search_filters(contact.name)
         if self._collect_search_results_instead_of_opening():
             collected = self._collect_and_score_visible_search_results(contact.name)
+            if collected == 0 and self._retry_search_with_profile_filter_only(contact.name):
+                collected = self._collect_and_score_visible_search_results(contact.name)
+                self.logger.log("candidate_results_profile_only_retry", contact.name, "success", f"candidates={collected}")
             self.logger.log("candidate_results_ranked", contact.name, "success", f"candidates={collected}")
             self.action_transition_pause()
             return
 
         if not self._click_contact(contact.name):
-            self.logger.log("open_profile", contact.name, "not_found")
-            self._leave_search_page(contact.name)
-            return
+            if self._retry_search_with_profile_filter_only(contact.name) and self._click_contact(contact.name):
+                self.logger.log("open_profile", contact.name, "fallback_success", "profile_filter_only")
+            else:
+                self.logger.log("open_profile", contact.name, "not_found")
+                self._leave_search_page(contact.name)
+                return
         self.logger.log("open_profile", contact.name, "success", f"{contact.title} at {contact.company}")
         self._analyze_open_profile(contact.name)
         scored_candidate = self._score_open_profile_candidate(contact.name)
@@ -2042,18 +2054,43 @@ class AndroidMockSiteDriver:
         except Exception:
             self._scroll_content_down()
 
-    def _apply_candidate_search_filters(self, search_query: str) -> None:
+    def _retry_search_with_profile_filter_only(self, search_query: str) -> bool:
+        settings = self.config.get("candidate_discovery", {})
+        if not settings.get("fallback_to_profile_filter_only_when_empty", True):
+            return False
+        if self.target != "app" or not settings.get("apply_people_search_filters", True):
+            return False
+        try:
+            self.logger.log("candidate_search_fallback", search_query, "started", "profile_filter_only")
+            self._go_home()
+            self.think(0.7, 1.4)
+            if not self._focus_search_box():
+                self.logger.log("candidate_search_fallback", search_query, "failed", "search input missing")
+                return False
+            self.think(0.2, 0.7)
+            self._type_text_human(search_query)
+            self.think(1.2, 2.4)
+            self._open_all_search_results(search_query)
+            self._apply_candidate_search_filters(search_query, include_connections=False)
+            self.logger.log("candidate_search_fallback", search_query, "applied", "profile_filter_only")
+            return True
+        except Exception as exc:
+            self.logger.log("candidate_search_fallback", search_query, "failed", repr(exc))
+            return False
+
+    def _apply_candidate_search_filters(self, search_query: str, include_connections: bool = True) -> None:
         settings = self.config.get("candidate_discovery", {})
         if self.target != "app" or not settings.get("apply_people_search_filters", True):
             return
         try:
             if self._select_people_results_filter(search_query):
                 self.think(0.7, 1.5)
-            if settings.get("apply_connection_filters", True):
+            if include_connections and settings.get("apply_connection_filters", True):
                 selected = self._select_connection_type_filters(search_query)
                 self.logger.log("candidate_search_filters", search_query, "applied", f"people=true,connections={','.join(selected) or 'none'}")
             else:
-                self.logger.log("candidate_search_filters", search_query, "applied", "people=true,connections=disabled")
+                detail = "people=true,connections=disabled" if include_connections else "people=true,connections=profile_filter_only"
+                self.logger.log("candidate_search_filters", search_query, "applied", detail)
         except Exception as exc:
             self.logger.log("candidate_search_filters", search_query, "failed", repr(exc))
 

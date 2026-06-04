@@ -89,6 +89,7 @@
     "max_search_queries_per_run": 3,
     "apply_people_search_filters": true,
     "apply_connection_filters": true,
+    "fallback_to_profile_filter_only_when_empty": true,
     "connection_filters": [
       "1st",
       "2nd"
